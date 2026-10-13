@@ -1,4 +1,5 @@
 pub mod cpp;
+pub mod java;
 pub mod python;
 pub mod rust;
 // Independent providers share bounded discovery machinery.
@@ -21,19 +22,7 @@ pub fn registry() -> Vec<Box<dyn ToolchainProvider>> {
         Box::new(rust::Rust),
         Box::new(cpp::Cpp),
         Box::new(python::Python),
-        Box::new(Provider {
-            language: "Java",
-            specs: || {
-                vec![
-                    ToolSpec {
-                        name: "java",
-                        role: Runtime,
-                        arguments: &["-version"],
-                    },
-                    ToolSpec::new("javac", Compiler),
-                ]
-            },
-        }),
+        Box::new(java::Java),
         Box::new(Provider {
             language: "Node.js",
             specs: || vec![ToolSpec::new("node", Runtime)],
