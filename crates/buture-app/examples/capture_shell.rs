@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 12] = [
+const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 13] = [
     ("full", VisualEffects::Full, [1440.0, 900.0], true, true),
     (
         "reduced",
@@ -34,6 +34,7 @@ const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 12] = [
         false,
     ),
     ("editor", VisualEffects::Full, [1440.0, 900.0], false, false),
+    ("tabs", VisualEffects::Full, [1440.0, 900.0], false, false),
     (
         "overview",
         VisualEffects::Full,
@@ -149,6 +150,11 @@ impl eframe::App for Capture {
             {
                 self.shell
                     .open_file(root.join("crates/buture-app/src/main.rs"));
+            }
+            if CASES[self.index].0 == "tabs"
+                && let Ok(root) = std::env::current_dir()
+            {
+                self.shell.open_file(root.join("Cargo.toml"));
             }
             if CASES[self.index].0 == "overview" {
                 self.shell.open_project_overview();

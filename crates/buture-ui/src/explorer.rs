@@ -19,6 +19,7 @@ pub struct ExplorerView {
 pub enum TreeAction {
     Toggle(PathBuf),
     Open(PathBuf),
+    Preview(PathBuf),
     Menu(PathBuf),
 }
 impl ExplorerView {
@@ -99,6 +100,9 @@ impl ExplorerView {
                             } else {
                                 TreeAction::Open(row.path.clone())
                             });
+                        }
+                        if response.clicked() && !response.double_clicked() && !row.directory {
+                            action = Some(TreeAction::Preview(row.path.clone()));
                         }
                         response.context_menu(|ui| {
                             if ui.button("File actions…").clicked() {

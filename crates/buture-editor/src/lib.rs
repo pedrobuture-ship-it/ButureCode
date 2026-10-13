@@ -247,6 +247,12 @@ impl Buffer {
             false
         }
     }
+    pub fn revert_to_saved(&mut self) {
+        self.remember();
+        self.rope = self.saved.clone();
+        self.id = self.saved_id;
+        self.revision = self.revision.wrapping_add(1);
+    }
     pub fn save(&self) -> Result<Saved, EditorError> {
         let path = self.path.as_ref().ok_or(EditorError::NoPath)?;
         if fs::symlink_metadata(path)?.file_type().is_symlink() {

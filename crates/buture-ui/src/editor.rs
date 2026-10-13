@@ -28,27 +28,144 @@ pub struct View {
 pub struct Document {
     pub buffer: Buffer,
     pub view: View,
+    pub pinned: bool,
+    pub preview: bool,
 }
 #[derive(Default)]
+pub struct Group {
+    pub tabs: Vec<usize>,
+    pub active: Option<usize>,
+}
 pub struct EditorSpace {
     pub documents: Vec<Document>,
     pub active: usize,
+    pub groups: Vec<Group>,
+    pub group_active: usize,
     pub files: Files,
     pub saving: BTreeSet<PathBuf>,
     pub loading: BTreeSet<PathBuf>,
+    preview_requests: BTreeSet<PathBuf>,
+    closed: Vec<usize>,
+    close_review: Vec<usize>,
+    close_after_save: BTreeSet<usize>,
+}
+impl Default for EditorSpace {
+    fn default() -> Self {
+        Self {
+            documents: Vec::new(),
+            active: 0,
+            groups: vec![Group::default()],
+            group_active: 0,
+            files: Files::default(),
+            saving: BTreeSet::new(),
+            loading: BTreeSet::new(),
+            preview_requests: BTreeSet::new(),
+            closed: Vec::new(),
+            close_review: Vec::new(),
+            close_after_save: BTreeSet::new(),
+        }
+    }
+}
+#[derive(Debug, Clone, Copy)]
+enum TabAction {
+    Close(usize),
+    Others(usize),
+    Right(usize),
+    Pin(usize),
+    Keep(usize),
+    Restore,
 }
 impl EditorSpace {
+    pub fn open_preview(&mut self, root: PathBuf, path: PathBuf) {
+        self.preview_requests.insert(path.clone());
+        self.open(root, path);
+    }
     pub fn open(&mut self, root: PathBuf, path: PathBuf) {
         if let Some(index) = self
             .documents
             .iter()
             .position(|d| d.buffer.path.as_ref() == Some(&path))
+            && self.groups.iter().any(|g| g.tabs.contains(&index))
         {
+            if !self.groups[self.group_active].tabs.contains(&index) {
+                self.groups[self.group_active].tabs.push(index);
+            }
+            self.preview_requests.remove(&path);
             self.active = index;
+            self.groups[self.group_active].active = Some(index);
             return;
         }
         if self.loading.insert(path.clone()) {
             self.files.open(root, path);
+        }
+    }
+    fn close_clean(&mut self, index: usize) {
+        let group = &mut self.groups[self.group_active];
+        group.tabs.retain(|i| *i != index);
+        if group.active == Some(index) {
+            group.active = group.tabs.last().copied();
+        }
+        self.closed.push(index);
+        if self.closed.len() > 20 {
+            self.closed.remove(0);
+        }
+        if let Some(active) = group.active {
+            self.active = active;
+        }
+    }
+    fn close_tabs(&mut self, indices: Vec<usize>) {
+        for index in indices {
+            if self.documents[index].buffer.dirty() {
+                if !self.close_review.contains(&index) {
+                    self.close_review.push(index);
+                }
+            } else {
+                self.close_clean(index);
+            }
+        }
+    }
+    fn action(&mut self, action: TabAction) {
+        match action {
+            TabAction::Close(i) => self.close_tabs(vec![i]),
+            TabAction::Others(i) => {
+                let indices = self.groups[self.group_active]
+                    .tabs
+                    .iter()
+                    .copied()
+                    .filter(|j| *j != i && !self.documents[*j].pinned)
+                    .collect();
+                self.close_tabs(indices);
+            }
+            TabAction::Right(i) => {
+                let group = &self.groups[self.group_active];
+                let start = group
+                    .tabs
+                    .iter()
+                    .position(|j| *j == i)
+                    .unwrap_or(group.tabs.len());
+                let indices = group
+                    .tabs
+                    .iter()
+                    .skip(start + 1)
+                    .copied()
+                    .filter(|j| !self.documents[*j].pinned)
+                    .collect();
+                self.close_tabs(indices);
+            }
+            TabAction::Pin(i) => {
+                self.documents[i].pinned = !self.documents[i].pinned;
+                self.documents[i].preview = false;
+            }
+            TabAction::Keep(i) => self.documents[i].preview = false,
+            TabAction::Restore => {
+                if let Some(index) = self.closed.pop()
+                    && !self.groups[self.group_active].tabs.contains(&index)
+                {
+                    self.groups[self.group_active].tabs.push(index);
+                    self.groups[self.group_active].active = Some(index);
+                    self.active = index;
+                }
+            }
         }
     }
     pub fn poll(&mut self) -> Option<String> {
@@ -56,23 +173,61 @@ impl EditorSpace {
         while let Ok(event) = self.files.events.try_recv() {
             match event {
                 FileEvent::Opened(buffer) => {
+                    let preview = buffer
+                        .path
+                        .as_ref()
+                        .is_some_and(|p| self.preview_requests.remove(p));
                     if let Some(path) = &buffer.path {
                         self.loading.remove(path);
                     }
-                    self.documents.push(Document {
+                    if preview {
+                        let old = self.groups[self.group_active]
+                            .tabs
+                            .iter()
+                            .copied()
+                            .find(|i| {
+                                self.documents[*i].preview && !self.documents[*i].buffer.dirty()
+                            });
+                        if let Some(old) = old {
+                            self.close_clean(old);
+                        }
+                    }
+                    let index = self
+                        .documents
+                        .iter()
+                        .position(|d| d.buffer.path == buffer.path)
+                        .unwrap_or(self.documents.len());
+                    let document = Document {
                         buffer,
                         view: View::default(),
-                    });
-                    self.active = self.documents.len() - 1;
+                        pinned: false,
+                        preview,
+                    };
+                    if index == self.documents.len() {
+                        self.documents.push(document);
+                    } else {
+                        self.documents[index] = document;
+                    }
+                    if !self.groups[self.group_active].tabs.contains(&index) {
+                        self.groups[self.group_active].tabs.push(index);
+                    }
+                    self.active = index;
+                    self.groups[self.group_active].active = Some(index);
                 }
                 FileEvent::Saved(saved) => {
                     self.saving.remove(&saved.path);
-                    if let Some(document) = self
+                    if let Some(index) = self
                         .documents
-                        .iter_mut()
-                        .find(|d| d.buffer.path.as_ref() == Some(&saved.path))
+                        .iter()
+                        .position(|d| d.buffer.path.as_ref() == Some(&saved.path))
                     {
-                        document.buffer.accept_saved(saved);
+                        self.documents[index].buffer.accept_saved(saved);
+                        if self.close_after_save.remove(&index)
+                            && !self.documents[index].buffer.dirty()
+                        {
+                            self.close_clean(index);
+                            self.close_review.retain(|i| *i != index);
+                        }
                     }
                 }
                 FileEvent::Failed { path, error } => {
@@ -84,63 +239,118 @@ impl EditorSpace {
         }
         message
     }
-    pub fn save_active(&mut self) {
-        if let Some(document) = self.documents.get(self.active)
+    fn save_document(&mut self, index: usize) {
+        if let Some(document) = self.documents.get(index)
             && let Some(path) = &document.buffer.path
             && self.saving.insert(path.clone())
         {
             self.files.save(document.buffer.clone());
         }
     }
-    pub fn show(&mut self, ui: &mut Ui, theme: &Theme) -> Option<String> {
-        if self.documents.is_empty() {
-            if !self.loading.is_empty() {
-                ui.spinner();
-                ui.label("Opening file…");
-            }
-            return None;
-        }
+    pub fn save_active(&mut self) {
+        self.save_document(self.active);
+    }
+    fn tab_bar(&mut self, ui: &mut Ui) -> bool {
+        let mut action = None;
         let mut save = false;
-        let mut error = None;
-        ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("open-documents")
-                .selected_text(
-                    self.documents[self.active]
-                        .buffer
-                        .path
-                        .as_ref()
-                        .map(|p| {
-                            p.file_name()
-                                .unwrap_or(p.as_os_str())
-                                .to_string_lossy()
-                                .into_owned()
-                        })
-                        .unwrap_or_else(|| "Untitled".into()),
-                )
-                .show_ui(ui, |ui| {
-                    for (index, document) in self.documents.iter().enumerate() {
-                        let name = document
-                            .buffer
-                            .path
-                            .as_ref()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|| "Untitled".into());
-                        ui.selectable_value(
-                            &mut self.active,
-                            index,
-                            format!("{name}{}", if document.buffer.dirty() { " *" } else { "" }),
-                        );
+        ui.horizontal_wrapped(|ui| {
+            for index in self.groups[self.group_active].tabs.clone() {
+                let document = &self.documents[index];
+                let name = document
+                    .buffer
+                    .path
+                    .as_ref()
+                    .map(|p| {
+                        p.file_name()
+                            .unwrap_or(p.as_os_str())
+                            .to_string_lossy()
+                            .into_owned()
+                    })
+                    .unwrap_or_else(|| "Untitled".into());
+                let label = format!(
+                    "{}{}{}",
+                    if document.pinned { "[pin] " } else { "" },
+                    name,
+                    if document.buffer.dirty() { " *" } else { "" }
+                );
+                let text = if document.preview {
+                    RichText::new(label).italics()
+                } else {
+                    RichText::new(label)
+                };
+                let response =
+                    ui.selectable_label(self.groups[self.group_active].active == Some(index), text);
+                if response.clicked() {
+                    self.active = index;
+                    self.groups[self.group_active].active = Some(index);
+                }
+                if response.double_clicked() {
+                    action = Some(TabAction::Keep(index));
+                }
+                response.context_menu(|ui| {
+                    for (label, event) in [
+                        ("Close", TabAction::Close(index)),
+                        ("Close others", TabAction::Others(index)),
+                        ("Close to right", TabAction::Right(index)),
+                        ("Pin / unpin", TabAction::Pin(index)),
+                        ("Keep open", TabAction::Keep(index)),
+                    ] {
+                        if ui.button(label).clicked() {
+                            action = Some(event);
+                            ui.close();
+                        }
                     }
                 });
+                if ui.small_button("x").clicked() {
+                    action = Some(TabAction::Close(index));
+                }
+            }
+            if ui.small_button("Restore closed").clicked() {
+                action = Some(TabAction::Restore);
+            }
             if ui.button("Save").clicked() {
                 save = true;
             }
-            if self.documents[self.active].buffer.dirty() {
-                ui.label("Modified");
-            }
         });
+        if let Some(action) = action {
+            self.action(action);
+        }
+        save
+    }
+    fn close_dialog(&mut self, ctx: &egui::Context) {
+        if let Some(index) = self.close_review.first().copied() {
+            let name = self.documents[index]
+                .buffer
+                .path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "Untitled".into());
+            egui::Window::new("Unsaved changes").collapsible(false).show(ctx,|ui|{
+        ui.label(name);ui.label("Save this document or confirm discarding its unsaved changes before closing.");
+        if ui.button("Save and close").clicked(){self.close_after_save.insert(index);self.save_document(index);}
+        if ui.button("Discard changes and close").clicked(){self.documents[index].buffer.revert_to_saved();self.close_clean(index);self.close_review.remove(0);}
+        if ui.button("Cancel").clicked(){self.close_review.clear();self.close_after_save.clear();}
+    });
+        }
+    }
+    pub fn show(&mut self, ui: &mut Ui, theme: &Theme) -> Option<String> {
+        self.close_dialog(ui.ctx());
+        let mut save = self.tab_bar(ui);
         ui.separator();
-        let document = &mut self.documents[self.active];
+        let Some(active) = self.groups[self.group_active].active else {
+            if !self.loading.is_empty() {
+                ui.spinner();
+            } else {
+                ui.label("No files open");
+            }
+            return None;
+        };
+        self.active = active;
+        let document = &mut self.documents[active];
+        if document.buffer.dirty() {
+            document.preview = false;
+        }
+        let mut error = None;
         match render(ui, theme, &mut document.buffer, &mut document.view) {
             Ok(request) => save |= request,
             Err(e) => error = Some(e.to_string()),
@@ -542,5 +752,33 @@ mod tests {
         );
         assert!(output.shapes.len() < 500);
         assert_eq!(buffer.revision, 0);
+    }
+    #[test]
+    fn closing_tabs_preserves_dirty_and_pinned_documents() {
+        let mut space = EditorSpace::default();
+        for i in 0..3 {
+            let mut buffer = Buffer::from_text("saved");
+            buffer.path = Some(format!("/file-{i}").into());
+            space.documents.push(Document {
+                buffer,
+                view: View::default(),
+                pinned: i == 1,
+                preview: false,
+            });
+        }
+        space.documents[2]
+            .buffer
+            .insert(0, "modified ")
+            .expect("edit");
+        space.groups[0].tabs = vec![0, 1, 2];
+        space.groups[0].active = Some(0);
+        space.action(TabAction::Others(0));
+        assert_eq!(space.groups[0].tabs, vec![0, 1, 2]);
+        assert_eq!(space.close_review, vec![2]);
+        space.action(TabAction::Close(0));
+        assert!(!space.groups[0].tabs.contains(&0));
+        space.action(TabAction::Restore);
+        assert!(space.groups[0].tabs.contains(&0));
+        assert!(space.documents[2].buffer.dirty());
     }
 }

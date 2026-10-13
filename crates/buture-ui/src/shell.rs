@@ -592,6 +592,7 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                                 self.workspace.send(buture_workspace::Request::Toggle(path))
                             }
                             TreeAction::Open(path) => {self.open_file(path);}
+                            TreeAction::Preview(path)=>{if let Some(root)=&self.root{self.editors.open_preview(root.clone(),path);self.show_project=false;self.show_doctor=false;self.show_toolchains=false;}},
                             TreeAction::Menu(path) => {
                                 self.file_menu = Some(path);
                                 self.file_name.clear();
