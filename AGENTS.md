@@ -11,7 +11,7 @@
 
 ## Escopo atual
 
-Este ciclo termina no **prompt 05**. Consulte `Buture Code — Prompts completos do zero.md`. Depois da janela principal, pare e aguarde ordens de Pedro Buture. Não antecipar funcionalidades dos prompts seguintes; crates reservados podem permanecer vazios e claramente documentados.
+Este ciclo foi ampliado por Pedro Buture até o **prompt 20**. Consulte `Buture Code — Prompts completos do zero.md`. Implementar em sequência, com commits pequenos e validação. Após a instalação assistida, parar e aguardar novas ordens; não antecipar os prompts 21–95.
 
 ## Implementação
 

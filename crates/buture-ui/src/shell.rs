@@ -205,12 +205,19 @@ impl IdeShell {
                     .color(theme.text.primary),
             );
             ui.add_space(theme.spacing.xl);
-            ui.label(
-                RichText::new("WORKSPACE")
-                    .size(theme.typography.caption)
-                    .color(theme.text.muted),
-            );
-            ui.label(RichText::new("/  No folder open").color(theme.text.secondary));
+            let shortcut = if cfg!(target_os = "macos") {
+                "⌘ K"
+            } else {
+                "Ctrl K"
+            };
+            let width = (ui.available_width() - 380.0).clamp(160.0, 440.0);
+            ui.add_sized(
+                [width, 30.0],
+                Button::new(format!(
+                    "⌕  Search files, symbols, commands...   {shortcut}"
+                )),
+            )
+            .on_hover_text("Command Center · available in a later milestone");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
                     .add(Button::new("×").frame(false))
@@ -239,6 +246,8 @@ impl IdeShell {
                         .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                 }
                 ui.separator();
+                ui.add_enabled(false, Button::new("Profile"));
+                ui.label("Git: no repository");
                 ui.toggle_value(&mut self.show_inspector, "Inspector")
                     .on_hover_text("Toggle right inspector");
                 ui.toggle_value(&mut self.show_bottom_panel, "Panel")
