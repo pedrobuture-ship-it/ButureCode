@@ -30,3 +30,7 @@ Versões e licenças confirmadas nos manifests dos pacotes baixados. AccessKit e
 - ignore 0.4.33: Unlicense OR MIT, https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore .
 
 Preservar os textos e notices dos pacotes, inclusive dependências transitivas do lockfile, na distribuição. O código autoral continua reservado a Pedro Buture.
+
+## Buffer — prompt 25
+
+- ropey 1.6.1: MIT OR Apache-2.0, https://github.com/cessen/ropey . Selecionar Apache-2.0 onde aplicável e preservar avisos transitivos (`str_indices` e `smallvec` no lockfile).

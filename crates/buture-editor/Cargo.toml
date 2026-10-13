@@ -10,3 +10,10 @@ description = "Future text buffer and editor rendering."
 
 [lints]
 workspace = true
+
+[dependencies]
+ropey = "=1.6.1"
+
+[[bench]]
+name = "buffer"
+harness = false
