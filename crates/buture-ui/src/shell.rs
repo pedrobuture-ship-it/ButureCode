@@ -79,6 +79,8 @@ pub struct IdeShell {
     pub show_bottom_panel: bool,
     backdrop: Backdrop,
     active: usize,
+    sidebar_width: f32,
+    explorer: crate::explorer::ExplorerView,
 }
 
 impl IdeShell {
@@ -88,6 +90,8 @@ impl IdeShell {
         Self {
             backdrop: Backdrop::new(ctx, &theme),
             active: 0,
+            sidebar_width: 210.0,
+            explorer: Default::default(),
             theme,
             effects: VisualEffects::Full,
             show_inspector: true,
@@ -97,12 +101,18 @@ impl IdeShell {
 
     pub fn show(&mut self, ctx: &Context) {
         let theme = self.theme;
-        let layout = ShellLayout::calculate(
+        let mut layout = ShellLayout::calculate(
             ctx.content_rect(),
             &theme,
             self.show_inspector,
             self.show_bottom_panel,
         );
+        let shift = self.sidebar_width - layout.sidebar.width();
+        layout.sidebar.max.x += shift;
+        layout.editor.min.x += shift;
+        if let Some(bottom) = &mut layout.bottom {
+            bottom.min.x += shift;
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
@@ -169,11 +179,27 @@ impl IdeShell {
                     &theme,
                     &mut self.active,
                 );
-                sidebar(
-                    &mut region(ui, "sidebar", layout.sidebar.shrink(theme.spacing.lg)),
-                    &theme,
-                    self.active,
+                let handle = Rect::from_min_max(
+                    pos2(layout.sidebar.right() - 3.0, layout.sidebar.top()),
+                    pos2(layout.sidebar.right() + 3.0, layout.sidebar.bottom()),
                 );
+                let resize = ui.interact(handle, ui.id().with("sidebar-resize"), Sense::drag());
+                if resize.dragged() {
+                    self.sidebar_width = (self.sidebar_width + resize.drag_delta().x)
+                        .clamp(150.0, (layout.outer.width() * 0.28).min(360.0));
+                }
+                resize.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+                let mut side = region(ui, "sidebar", layout.sidebar.shrink(theme.spacing.md));
+                if self.active == 0 {
+                    side.heading("Explorer");
+                    side.separator();
+                    if self.explorer.rows.is_empty() {
+                        side.label("No folder open");
+                    }
+                    self.explorer.show(&mut side);
+                } else {
+                    sidebar(&mut side, &theme, self.active);
+                }
                 editor(&mut region(ui, "editor", layout.editor), &theme);
                 if let Some(rect) = layout.inspector {
                     self.inspector(&mut region(ui, "inspector", rect.shrink(theme.spacing.xl)));

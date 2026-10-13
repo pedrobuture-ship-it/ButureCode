@@ -7,3 +7,5 @@ pub use glass::{GlassSurface, GlassVariant};
 pub use theme::Theme;
 pub mod shell;
 pub use shell::IdeShell;
+
+pub mod explorer;
