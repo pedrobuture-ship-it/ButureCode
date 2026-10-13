@@ -81,6 +81,14 @@ pub struct IdeShell {
     active: usize,
     sidebar_width: f32,
     explorer: crate::explorer::ExplorerView,
+    workspace: buture_workspace::Workspace,
+    root: Option<std::path::PathBuf>,
+    folder_input: String,
+    open_folder: bool,
+    file_menu: Option<std::path::PathBuf>,
+    file_name: String,
+    preview: Option<(std::path::PathBuf, String)>,
+    message: String,
 }
 
 impl IdeShell {
@@ -92,6 +100,14 @@ impl IdeShell {
             active: 0,
             sidebar_width: 210.0,
             explorer: Default::default(),
+            workspace: Default::default(),
+            root: None,
+            folder_input: String::new(),
+            open_folder: false,
+            file_menu: None,
+            file_name: String::new(),
+            preview: None,
+            message: String::new(),
             theme,
             effects: VisualEffects::Full,
             show_inspector: true,
@@ -100,6 +116,31 @@ impl IdeShell {
     }
 
     pub fn show(&mut self, ctx: &Context) {
+        while let Ok(event) = self.workspace.events.try_recv() {
+            match event {
+                buture_workspace::Event::Tree { root, entries } => {
+                    self.root = Some(root);
+                    self.explorer.rows = entries
+                        .into_iter()
+                        .map(|e| crate::explorer::TreeRow {
+                            path: e.path,
+                            directory: e.directory,
+                            depth: e.depth,
+                            expanded: e.expanded,
+                        })
+                        .collect();
+                }
+                buture_workspace::Event::Preview { path, text } => {
+                    self.preview = Some((path, text))
+                }
+                buture_workspace::Event::Error(error) => self.message = error,
+            }
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::O)) {
+            self.open_folder = true;
+        }
+        self.workspace_dialogs(ctx);
         let theme = self.theme;
         let mut layout = ShellLayout::calculate(
             ctx.content_rect(),
@@ -191,16 +232,56 @@ impl IdeShell {
                 resize.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
                 let mut side = region(ui, "sidebar", layout.sidebar.shrink(theme.spacing.md));
                 if self.active == 0 {
-                    side.heading("Explorer");
+                    side.horizontal(|ui| {
+                        ui.heading("Explorer");
+                        if ui.small_button("Open…").clicked() {
+                            self.open_folder = true;
+                        }
+                    });
+                    side.horizontal(|ui| {
+                        if ui.small_button("Refresh").clicked() {
+                            self.workspace.send(buture_workspace::Request::Refresh);
+                        }
+                        if ui.small_button("Collapse").clicked() {
+                            self.workspace.send(buture_workspace::Request::Collapse);
+                        }
+                    });
                     side.separator();
                     if self.explorer.rows.is_empty() {
                         side.label("No folder open");
                     }
-                    self.explorer.show(&mut side);
+                    if let Some(action) = self.explorer.show(&mut side) {
+                        use crate::explorer::TreeAction;
+                        match action {
+                            TreeAction::Toggle(path) => {
+                                self.workspace.send(buture_workspace::Request::Toggle(path))
+                            }
+                            TreeAction::Open(path) => {
+                                self.workspace.send(buture_workspace::Request::Read(path))
+                            }
+                            TreeAction::Menu(path) => {
+                                self.file_menu = Some(path);
+                                self.file_name.clear();
+                            }
+                        }
+                    }
                 } else {
                     sidebar(&mut side, &theme, self.active);
                 }
-                editor(&mut region(ui, "editor", layout.editor), &theme);
+                let mut center = region(ui, "editor", layout.editor.shrink(theme.spacing.md));
+                if let Some((path, text)) = &self.preview {
+                    center.label(path.display().to_string());
+                    center.label("Read-only preview · editing belongs to prompt 25");
+                    center.separator();
+                    egui::ScrollArea::both().show(&mut center, |ui| {
+                        ui.add(
+                            egui::Label::new(RichText::new(text).monospace())
+                                .wrap_mode(egui::TextWrapMode::Extend),
+                        );
+                    });
+                } else {
+                    editor(&mut center, &theme);
+                }
                 if let Some(rect) = layout.inspector {
                     self.inspector(&mut region(ui, "inspector", rect.shrink(theme.spacing.xl)));
                 }
@@ -209,6 +290,9 @@ impl IdeShell {
                         &mut region(ui, "output", rect.shrink(theme.spacing.lg)),
                         &theme,
                     );
+                }
+                if !self.message.is_empty() {
+                    ui.label(&self.message);
                 }
                 status_bar(
                     &mut region(
@@ -221,6 +305,82 @@ impl IdeShell {
                     &theme,
                 );
             });
+    }
+
+    fn workspace_dialogs(&mut self, ctx: &Context) {
+        if self.open_folder {
+            egui::Window::new("Open Folder")
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.label("Absolute path to your workspace");
+                    ui.text_edit_singleline(&mut self.folder_input);
+                    if ui.button("Open").clicked() {
+                        self.workspace.send(buture_workspace::Request::Open(
+                            self.folder_input.clone().into(),
+                        ));
+                        self.open_folder = false;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.open_folder = false;
+                    }
+                });
+        }
+        if let Some(path) = self.file_menu.clone() {
+            egui::Window::new("File actions")
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.label(path.display().to_string());
+                    if ui.button("Copy path").clicked() {
+                        ctx.copy_text(path.display().to_string());
+                    }
+                    if ui.button("Reveal in file manager").clicked() {
+                        self.workspace
+                            .send(buture_workspace::Request::Reveal(path.clone()));
+                    }
+                    ui.label("Name or copy destination inside the workspace");
+                    ui.text_edit_singleline(&mut self.file_name);
+                    for (label, op) in [
+                        (
+                            "New file",
+                            buture_workspace::Operation::NewFile(self.file_name.clone()),
+                        ),
+                        (
+                            "New folder",
+                            buture_workspace::Operation::NewFolder(self.file_name.clone()),
+                        ),
+                        (
+                            "Rename",
+                            buture_workspace::Operation::Rename(self.file_name.clone()),
+                        ),
+                        (
+                            "Duplicate",
+                            buture_workspace::Operation::Duplicate(self.file_name.clone()),
+                        ),
+                        (
+                            "Copy to path",
+                            buture_workspace::Operation::CopyTo(self.file_name.clone().into()),
+                        ),
+                    ] {
+                        if ui.button(label).clicked() {
+                            self.workspace
+                                .send(buture_workspace::Request::Mutate(path.clone(), op));
+                            self.file_menu = None;
+                        }
+                    }
+                    ui.separator();
+                    ui.label("Delete permanently removes this entry and its contents.");
+                    if ui.button("Confirm permanent deletion").clicked() {
+                        self.workspace.send(buture_workspace::Request::Mutate(
+                            path,
+                            buture_workspace::Operation::Delete,
+                        ));
+                        self.file_menu = None;
+                    }
+                    if ui.button("Close").clicked() {
+                        self.file_menu = None;
+                    }
+                });
+        }
     }
 
     fn top_bar(&mut self, ui: &mut Ui) {

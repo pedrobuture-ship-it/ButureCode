@@ -13,3 +13,7 @@ Avaliação realizada antes da UI:
 Fontes primárias: https://github.com/emilk/egui e https://docs.rs/eframe ; GPUI: https://github.com/zed-industries/zed/tree/main/crates/gpui . A licença do projeto não muda por usar dependências permissivas.
 
 Versões selecionadas: egui e eframe **0.33.3**, fixadas na mesma versão, compatíveis com o MSRV declarado 1.88. O toolkit mais novo não é necessário para este shell; upgrades exigem revisão de API, MSRV e renderização. egui entra no prompt 04, eframe somente no prompt 05. eframe usará OpenGL/Glow com X11 e Wayland para reduzir o conjunto de dependências do primeiro marco; sem WebView, persistência ou telemetria.
+
+## Explorer (prompt 09)
+
+Biblioteca padrão: actor em thread, canais e watcher por polling de dois segundos apenas nas pastas expandidas. Evita dependência de watcher nativo neste ciclo e funciona nos três hosts; não detecta instantaneamente mudanças. Diretórios não expandidos não são lidos. A lista visível é virtualizada. Preview limitado a 1 MiB de UTF-8; não é editor. Cópias de diretórios são feitas no worker e podem deixar cópia parcial se ocorrer erro de IO. Links simbólicos não são percorridos nem modificados.

@@ -14,3 +14,4 @@ workspace = true
 [dependencies]
 egui.workspace = true
 buture-settings = { path = "../buture-settings" }
+buture-workspace = { path = "../buture-workspace" }
