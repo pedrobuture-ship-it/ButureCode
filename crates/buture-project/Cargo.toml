@@ -10,3 +10,8 @@ description = "Future project metadata and stack detection."
 
 [lints]
 workspace = true
+
+[dependencies]
+serde_json = "=1.0.154"
+toml = "=1.1.8"
+ignore = "=0.4.33"

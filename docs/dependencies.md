@@ -21,3 +21,15 @@ Biblioteca padrão: actor em thread, canais e watcher por polling de dois segund
 ## Prompts 10–20
 
 Sem dependências externas adicionais. Biblioteca padrão fornece INI validado por schema fechado, camadas de configuração, canais/threads, detecção de diretórios e sondagens de subprocessos. Escolha deliberada para não adicionar um runtime async ou serialização genérica para oito preferências tipadas. Ferramentas e gerenciadores de pacotes detectados são executáveis externos, não dependências linkadas nem redistribuídas; seus termos são próprios. Sondagens limitadas e workers evitam bloqueio do loop de apresentação. Expansão de schema/formatos e watcher nativo exigirá nova avaliação de dependências.
+
+## Avaliação antes dos prompts 23–35
+
+Fontes primárias consultadas: documentação e metadados crates.io dos upstreams. As escolhas não alteram os direitos do Buture Code. As dependências preservam suas próprias notices.
+
+- `serde_json` 1.0.154 e `toml` 1.1.8 : parsing real dos manifests, bibliotecas mantidas, MIT OR Apache-2.0 (preferência Apache-2.0). MSRV 1.71 / 1.85, compatíveis Rust 1.88, portáveis. Sem executar conteúdo de manifests.
+- `ignore` 0.4.33 : caminhamento recursivo, globs e regras gitignore do ripgrep, mantido e multiplataforma, Unlicense OR MIT, MSRV 1.88. Evita um motor ignore artesanal. Caminhamento limitado e cancelável para monorepos.
+- `ropey` 1.6.1 : rope UTF-8 Rust maduro, licença MIT OR Apache-2.0 (preferência Apache-2.0), MSRV 1.65. Inserção/remoção e índices de linhas escaláveis; snapshots compartilham estrutura para undo e workers. Medir workloads do projeto sem prometer performance não medida.
+- `regex` 1.13.1 : motor Rust mantido, MIT OR Apache-2.0, MSRV 1.65, sem backtracking exponencial. Compilação no worker, limites de tamanho e resultados em streaming.
+- Tree-sitter : runtime C com binding Rust e parsers upstream; MIT para runtime/gramáticas, compatível Windows/Linux/macOS mas exige compilador C no build. A versão 0.27.1 exige Rust 1.90; selecionar 0.25.x compatível com MSRV 1.88 e validar ABI/linguagens. Gramáticas Rust/C/C++/Python/Java/JavaScript/TypeScript/Go/JSON e tree-sitter-grammars TOML/YAML/Markdown; versões fixadas e testes de cada parser. Sem código copiado de VS Code ou Zed. `unsafe` fica nas dependências; nenhum FFI unsafe no código autoral.
+
+Fontes: https://docs.rs/ropey/1.6.1/ropey/ , https://tree-sitter.github.io/tree-sitter/using-parsers/ , https://docs.rs/ignore/0.4.33/ignore/ , https://github.com/rust-lang/regex , https://github.com/serde-rs/json e https://github.com/toml-rs/toml .

@@ -22,3 +22,11 @@ A referência visual foi fornecida pelo proprietário como direção de design; 
 - png 0.18.1: MIT OR Apache-2.0, https://github.com/image-rs/image-png ; usado diretamente somente no exemplo de captura para QA.
 
 Versões e licenças confirmadas nos manifests dos pacotes baixados. AccessKit está habilitado pelo backend, sem afirmar validação completa de acessibilidade. Avisos transitivos e textos de licenças ainda precisam ser reunidos antes de uma distribuição binária.
+
+## Detecção de projetos — prompt 23
+
+- serde_json 1.0.154: MIT OR Apache-2.0, https://github.com/serde-rs/json .
+- toml 1.1.8+spec-1.1.0: MIT OR Apache-2.0, https://github.com/toml-rs/toml .
+- ignore 0.4.33: Unlicense OR MIT, https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore .
+
+Preservar os textos e notices dos pacotes, inclusive dependências transitivas do lockfile, na distribuição. O código autoral continua reservado a Pedro Buture.
