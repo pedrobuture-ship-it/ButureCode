@@ -273,6 +273,8 @@ impl Preferences {
         Self { requests, events }
     }
 }
+pub mod keybindings;
+
 #[cfg(test)]
 mod tests {
     use super::*;

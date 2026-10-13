@@ -96,6 +96,14 @@ pub struct IdeShell {
     commands: buture_core::commands::CommandRegistry,
     open_file_dialog: bool,
     file_input: String,
+    keymap: buture_core::keybindings::Keymap,
+    shortcut_store: Option<buture_settings::keybindings::Store>,
+    shortcuts: crate::shortcuts::Shortcuts,
+    show_shortcuts: bool,
+    dialog_focus: bool,
+    exit_review: bool,
+    exit_saving: bool,
+    exit_allowed: bool,
     pending_file: Option<std::path::PathBuf>,
     message: String,
     preferences: Option<buture_settings::Preferences>,
@@ -156,6 +164,17 @@ impl IdeShell {
             commands: buture_core::commands::CommandRegistry::standard(),
             open_file_dialog: false,
             file_input: String::new(),
+            keymap: buture_core::keybindings::Keymap::defaults(
+                buture_core::keybindings::Platform::current(),
+                &buture_core::commands::CommandRegistry::standard(),
+            ),
+            shortcut_store: None,
+            shortcuts: Default::default(),
+            show_shortcuts: false,
+            dialog_focus: false,
+            exit_review: false,
+            exit_saving: false,
+            exit_allowed: false,
             pending_file: None,
             message: String::new(),
             preferences: None,
@@ -196,6 +215,9 @@ impl IdeShell {
         if let Some(path) = buture_settings::user_path() {
             self.editors
                 .configure_session(path.with_file_name("editor-session.json"));
+            self.shortcut_store = Some(buture_settings::keybindings::Store::start(
+                path.with_file_name("keybindings.ini"),
+            ));
         }
         self.preferences = Some(buture_settings::Preferences::start());
         self.initialize_environment();
@@ -257,14 +279,144 @@ impl IdeShell {
             quick_open: true,
         }
     }
+    pub fn open_shortcuts(&mut self) {
+        self.palette.open = false;
+        self.quick_open.open = false;
+        self.show_shortcuts = true;
+        self.active = 7;
+    }
+    fn handle_shortcuts(&mut self, ctx: &Context) {
+        use buture_core::keybindings::{Outcome, Stroke};
+        let time = ctx.input(|i| i.time);
+        self.keymap.tick(time);
+        if self.palette.open
+            || self.quick_open.open
+            || self.open_file_dialog
+            || self.open_folder
+            || self.exit_review
+        {
+            return;
+        }
+        let editor = !self.show_shortcuts
+            && !self.show_project
+            && !self.show_doctor
+            && !self.show_toolchains
+            && self.active == 0
+            && self.editors.has_focus(ctx);
+        let events = ctx.input(|i| i.events.clone());
+        let mut consumed = Vec::new();
+        let mut actions = Vec::new();
+        for (index, event) in events.iter().enumerate() {
+            if let egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } = event
+            {
+                let stroke = Stroke {
+                    key: format!("{key:?}"),
+                    ctrl: modifiers.ctrl,
+                    command: modifiers.mac_cmd,
+                    alt: modifiers.alt,
+                    shift: modifiers.shift,
+                };
+                match self.keymap.process(stroke, editor, time) {
+                    Outcome::Ignored => {}
+                    Outcome::Pending => consumed.push(index),
+                    Outcome::Command(id) => {
+                        consumed.push(index);
+                        if let Some(command) = self.commands.get(&id) {
+                            actions.push((command.action, command.scope));
+                        }
+                    }
+                }
+            }
+        }
+        ctx.input_mut(|i| {
+            let mut index = 0;
+            i.events.retain(|event| {
+                let keep = !consumed.contains(&index)
+                    && !(!consumed.is_empty()
+                        && matches!(
+                            event,
+                            egui::Event::Copy
+                                | egui::Event::Cut
+                                | egui::Event::Paste(_)
+                                | egui::Event::Text(_)
+                        ));
+                index += 1;
+                keep
+            });
+        });
+        for (action, scope) in actions {
+            if let Some(reason) = self.command_context().reason(action, scope) {
+                self.message = reason.into();
+            } else {
+                self.dispatch(action);
+            }
+        }
+        if let Some(label) = self.keymap.pending_label() {
+            self.message = format!("{label} … waiting for second key");
+        }
+    }
+    fn exit_dialog(&mut self, ctx: &Context) {
+        if !self.exit_review {
+            return;
+        }
+        if self.exit_saving && self.editors.saving.is_empty() {
+            self.exit_saving = false;
+            if self.editors.dirty_paths().is_empty() && self.installation.is_none() {
+                self.exit_allowed = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
+        }
+        egui::Modal::new(egui::Id::new("exit-review")).show(ctx, |ui| {
+            ui.heading("Close Buture Code");
+            ui.label(format!(
+                "{} document(s) with unsaved changes",
+                self.editors.dirty_paths().len()
+            ));
+            if self.installation.is_some() {
+                ui.label("Wait for the active installation to finish before closing.");
+            }
+            let idle = self.editors.saving.is_empty() && self.installation.is_none();
+            if ui
+                .add_enabled(idle, egui::Button::new("Save all and close"))
+                .clicked()
+            {
+                self.editors.save_all();
+                self.exit_saving = true;
+            }
+            if ui
+                .add_enabled(idle, egui::Button::new("Discard unsaved changes and close"))
+                .clicked()
+            {
+                self.exit_allowed = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            if ui.button("Cancel").clicked() {
+                self.exit_review = false;
+                self.exit_saving = false;
+            }
+        });
+    }
     fn dispatch(&mut self, action: buture_core::commands::Action) {
         use crate::editor::EditCommand;
         use buture_core::commands::Action;
         match action {
-            Action::OpenFile => self.open_file_dialog = true,
-            Action::OpenFolder => self.open_folder = true,
+            Action::OpenFile => {
+                self.open_file_dialog = true;
+                self.dialog_focus = false;
+            }
+            Action::OpenFolder => {
+                self.open_folder = true;
+                self.dialog_focus = false;
+            }
             Action::Doctor => self.open_doctor(),
             Action::Settings => {
+                self.show_shortcuts = true;
                 self.active = 7;
                 self.show_doctor = false;
                 self.show_project = false;
@@ -278,8 +430,14 @@ impl IdeShell {
                 };
                 self.save_preference("Appearance.effects", self.effects.label());
             }
-            Action::SearchDocument => self.open_search(false),
-            Action::SearchWorkspace => self.open_search(true),
+            Action::SearchDocument => {
+                self.show_shortcuts = false;
+                self.open_search(false);
+            }
+            Action::SearchWorkspace => {
+                self.show_shortcuts = false;
+                self.open_search(true);
+            }
             Action::Palette => self.open_palette(),
             Action::QuickOpen => self.open_quick_open(),
             Action::TogglePanel => {
@@ -316,6 +474,7 @@ impl IdeShell {
                     "comment" => EditCommand::Comment,
                     "indent" => EditCommand::Indent,
                     "outdent" => EditCommand::Outdent,
+                    "tab" => EditCommand::Tab,
                     "occurrence" => EditCommand::Occurrence,
                     "cursorUp" => EditCommand::CursorUp,
                     "cursorDown" => EditCommand::CursorDown,
@@ -379,6 +538,7 @@ impl IdeShell {
         }
     }
     pub fn open_file(&mut self, path: std::path::PathBuf) {
+        self.show_shortcuts = false;
         if let Some(root) = &self.root {
             self.editors.open(root.clone(), path);
             self.show_doctor = false;
@@ -392,6 +552,7 @@ impl IdeShell {
         self.open_search(true);
     }
     pub fn open_search(&mut self, workspace: bool) {
+        self.show_shortcuts = false;
         self.active = 1;
         self.show_doctor = false;
         self.show_project = false;
@@ -399,6 +560,7 @@ impl IdeShell {
         self.search.open(workspace);
     }
     pub fn open_doctor(&mut self) {
+        self.show_shortcuts = false;
         self.show_project = false;
         self.show_doctor = true;
         self.show_toolchains = false;
@@ -438,11 +600,13 @@ impl IdeShell {
         languages
     }
     pub fn open_project_overview(&mut self) {
+        self.show_shortcuts = false;
         self.show_project = true;
         self.show_doctor = false;
         self.show_toolchains = false;
     }
     pub fn open_toolchain_manager(&mut self) {
+        self.show_shortcuts = false;
         self.show_doctor = false;
         self.show_project = false;
         self.active = 7;
@@ -503,6 +667,34 @@ impl IdeShell {
         }
     }
     pub fn show(&mut self, ctx: &Context) {
+        if let Some(store) = &self.shortcut_store {
+            while let Ok(event) = store.events.try_recv() {
+                match event {
+                    buture_settings::keybindings::Event::Loaded { profile, keymap } => {
+                        self.shortcuts.text = profile;
+                        match keymap {
+                            Ok(map) => {
+                                self.keymap = map;
+                                self.shortcuts.error = None;
+                            }
+                            Err(error) => self.shortcuts.error = Some(error.to_string()),
+                        }
+                    }
+                    buture_settings::keybindings::Event::Failed(error) => {
+                        self.shortcuts.error = Some(error.to_string())
+                    }
+                }
+            }
+        }
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.exit_allowed
+            && (!self.editors.dirty_paths().is_empty()
+                || !self.editors.saving.is_empty()
+                || self.installation.is_some())
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.exit_review = true;
+        }
         if let Some(message) = self.search.poll(&mut self.editors) {
             self.message = message;
         }
@@ -630,34 +822,24 @@ impl IdeShell {
             }
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::O)) {
-            self.open_folder = true;
-        }
-        if ctx.input_mut(|i| {
-            i.consume_key(
-                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
-                egui::Key::F,
-            )
-        }) {
-            self.open_search(true);
-        } else if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
-            self.open_search(false);
-        }
-        if ctx.input_mut(|i| {
-            i.consume_key(
-                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
-                egui::Key::P,
-            )
-        }) || ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::K))
-        {
-            self.open_palette();
-        }
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::P)) {
-            self.open_quick_open();
-        }
+        self.handle_shortcuts(ctx);
         self.command_palette(ctx);
         self.quick_picker(ctx);
         self.workspace_dialogs(ctx);
+        self.exit_dialog(ctx);
+        if self.exit_review {
+            ctx.input_mut(|i| {
+                i.events.retain(|e| {
+                    !matches!(
+                        e,
+                        egui::Event::Key { .. }
+                            | egui::Event::Text(_)
+                            | egui::Event::Paste(_)
+                            | egui::Event::Cut
+                    )
+                })
+            });
+        }
         self.install_dialogs(ctx);
         if self.preview_first_run
             || (self.preferences.is_some()
@@ -782,6 +964,7 @@ impl IdeShell {
                     &theme,
                     &mut self.active,
                 );
+                if self.active != 7 { self.show_shortcuts = false; }
                 let handle = Rect::from_min_max(
                     pos2(layout.sidebar.right() - 3.0, layout.sidebar.top()),
                     pos2(layout.sidebar.right() + 3.0, layout.sidebar.bottom()),
@@ -830,6 +1013,7 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                     }
                 } else if self.active == 7 {
                     side.heading("Settings");
+                    if side.button("Keyboard Shortcuts").clicked() { self.open_shortcuts(); }
                     egui::ScrollArea::vertical().show(&mut side, |ui| {
                         for category in buture_settings::CATEGORIES {
                             ui.collapsing(category, |ui| {
@@ -851,6 +1035,7 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                                     }
                                 } else if category == "Development" || category == "Toolchains" {
                                     if ui.button("Toolchains").clicked() {
+                                        self.show_shortcuts = false;
                                         self.show_toolchains = true;
                                     }
                                 } else {
@@ -863,7 +1048,13 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                     sidebar(&mut side, &theme, self.active);
                 }
                 let mut center = region(ui, "editor", layout.editor.shrink(theme.spacing.md));
-                if self.active==1 {
+                if self.show_shortcuts {
+                    if let Some(action) = self.shortcuts.show(&mut center, &theme, &self.commands, &self.keymap) {
+                        if let Some(store) = &self.shortcut_store {
+                            match action { crate::shortcuts::Action::Save => store.save(self.shortcuts.text.clone()), crate::shortcuts::Action::Reload => store.reload() }
+                        } else { self.shortcuts.error = Some("Profile persistence is disabled in this preview".into()); }
+                    }
+                } else if self.active==1 {
                     if let Some(selected)=self.search.show(&mut center,&theme,self.root.as_ref(),&self.editors) && let Some(root)=&self.root {
                         if let Some(error)=self.editors.open_match(root.clone(),selected.hit.path,selected.hit.bytes,selected.stamp){self.message=error;}self.active=0;
                     }
@@ -1053,13 +1244,23 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                 .collapsible(false)
                 .show(ctx, |ui| {
                     ui.label("File path (absolute, or relative to the current workspace)");
-                    ui.text_edit_singleline(&mut self.file_input);
-                    if ui.button("Open").clicked() {
+                    let response = ui.text_edit_singleline(&mut self.file_input);
+                    if !self.dialog_focus {
+                        response.request_focus();
+                        self.dialog_focus = true;
+                    }
+                    if ui.button("Open").clicked()
+                        || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                    {
                         self.open_path(self.file_input.clone().into());
                         self.open_file_dialog = false;
+                        self.dialog_focus = false;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button("Cancel").clicked()
+                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                    {
                         self.open_file_dialog = false;
+                        self.dialog_focus = false;
                     }
                 });
         }
@@ -1069,15 +1270,25 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                 .collapsible(false)
                 .show(ctx, |ui| {
                     ui.label("Absolute path to your workspace");
-                    ui.text_edit_singleline(&mut self.folder_input);
-                    if ui.button("Open").clicked() {
+                    let response = ui.text_edit_singleline(&mut self.folder_input);
+                    if !self.dialog_focus {
+                        response.request_focus();
+                        self.dialog_focus = true;
+                    }
+                    if ui.button("Open").clicked()
+                        || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                    {
                         self.workspace.send(buture_workspace::Request::Open(
                             self.folder_input.clone().into(),
                         ));
                         self.open_folder = false;
+                        self.dialog_focus = false;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button("Cancel").clicked()
+                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                    {
                         self.open_folder = false;
+                        self.dialog_focus = false;
                     }
                 });
         }
@@ -1151,11 +1362,7 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                     .color(theme.text.primary),
             );
             ui.add_space(theme.spacing.xl);
-            let shortcut = if cfg!(target_os = "macos") {
-                "⌘ K"
-            } else {
-                "Ctrl K"
-            };
+            let shortcut = self.keymap.label("commands.open");
             let width = (ui.available_width() - 380.0).clamp(160.0, 440.0);
             if ui
                 .add_sized(
@@ -1755,6 +1962,98 @@ impl Icon {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shortcut_overrides_remove_defaults_and_consume_chord_text() {
+        let ctx = Context::default();
+        let mut shell = IdeShell::new(&ctx);
+        shell.keymap = buture_core::keybindings::Keymap::overrides(
+            "workspace.open=Primary+Alt+O",
+            buture_core::keybindings::Platform::Linux,
+            &shell.commands,
+        )
+        .expect("profile");
+        for (alt, expected) in [(false, false), (true, true)] {
+            let raw = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: egui::Key::O,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers {
+                        ctrl: true,
+                        alt,
+                        ..Default::default()
+                    },
+                }],
+                ..Default::default()
+            };
+            let _ = ctx.run(raw, |ctx| shell.handle_shortcuts(ctx));
+            assert_eq!(shell.open_folder, expected);
+        }
+        shell.open_folder = false;
+        shell.keymap = buture_core::keybindings::Keymap::overrides(
+            "workspace.open=Primary+Alt+K O",
+            buture_core::keybindings::Platform::Linux,
+            &shell.commands,
+        )
+        .expect("chord");
+        for (key, modifiers, text) in [
+            (
+                egui::Key::K,
+                egui::Modifiers {
+                    ctrl: true,
+                    alt: true,
+                    ..Default::default()
+                },
+                "",
+            ),
+            (egui::Key::O, egui::Modifiers::NONE, "o"),
+        ] {
+            let raw = egui::RawInput {
+                events: vec![
+                    egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                    },
+                    egui::Event::Text(text.into()),
+                ],
+                ..Default::default()
+            };
+            let _ = ctx.run(raw, |ctx| {
+                shell.handle_shortcuts(ctx);
+                assert!(!ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(_)))));
+            });
+        }
+        assert!(shell.open_folder);
+    }
+    #[test]
+    fn native_close_request_waits_for_in_flight_save() {
+        let ctx = Context::default();
+        let mut shell = IdeShell::new(&ctx);
+        shell.editors.saving.insert("main.rs".into());
+        let mut raw = egui::RawInput::default();
+        raw.viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .expect("root")
+            .events
+            .push(egui::ViewportEvent::Close);
+        let output = ctx.run(raw, |ctx| shell.show(ctx));
+        assert!(shell.exit_review);
+        assert!(!shell.exit_allowed);
+        assert!(
+            output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::CancelClose))
+        );
+        shell.editors.saving.clear();
+        shell.open_shortcuts();
+        let output = ctx.run(egui::RawInput::default(), |ctx| shell.show(ctx));
+        assert!(!output.shapes.is_empty());
+    }
     #[test]
     fn editor_keeps_space_with_optional_panels() {
         let theme = Theme::dark();

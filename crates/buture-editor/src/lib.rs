@@ -331,11 +331,13 @@ impl Buffer {
             ".buture-save-{}-{sequence}.tmp",
             std::process::id()
         ));
+        let mut created = false;
         let result = (|| {
             let mut file = fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&temporary)?;
+            created = true;
             fs::set_permissions(&temporary, fs::metadata(path)?.permissions())?;
             self.rope.write_to(&mut file)?;
             file.sync_all()?;
@@ -347,7 +349,7 @@ impl Buffer {
                 rope: self.rope.clone(),
             })
         })();
-        if result.is_err() {
+        if result.is_err() && created {
             let _ = fs::remove_file(&temporary);
         }
         result

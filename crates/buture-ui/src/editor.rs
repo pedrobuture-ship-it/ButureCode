@@ -30,6 +30,7 @@ pub struct View {
     fold_revision: u64,
     bracket_cache: Option<BracketCache>,
     focus: Option<egui::Id>,
+    want_focus: bool,
     pub follow_caret: bool,
     scroll: egui::Vec2,
     dragging: bool,
@@ -58,6 +59,7 @@ pub struct EditorSpace {
     pub saving: BTreeSet<PathBuf>,
     pub loading: BTreeSet<PathBuf>,
     preview_requests: BTreeSet<PathBuf>,
+    focus_requests: BTreeSet<PathBuf>,
     closed: Vec<usize>,
     close_review: Vec<usize>,
     close_after_save: BTreeMap<usize, usize>,
@@ -82,6 +84,7 @@ impl Default for EditorSpace {
             saving: BTreeSet::new(),
             loading: BTreeSet::new(),
             preview_requests: BTreeSet::new(),
+            focus_requests: BTreeSet::new(),
             closed: Vec::new(),
             close_review: Vec::new(),
             close_after_save: BTreeMap::new(),
@@ -179,20 +182,40 @@ impl EditorSpace {
         self.persist();
     }
     pub fn open_preview(&mut self, root: PathBuf, path: PathBuf) {
-        self.preview_requests.insert(path.clone());
-        self.open(root, path);
+        self.open_kind(root, path, true);
     }
     pub fn open(&mut self, root: PathBuf, path: PathBuf) {
+        self.open_kind(root, path, false);
+    }
+    fn open_kind(&mut self, root: PathBuf, path: PathBuf, preview: bool) {
+        self.restored_active.remove(&self.group_active);
+        if preview {
+            self.preview_requests.insert(path.clone());
+        } else {
+            self.preview_requests.remove(&path);
+            self.focus_requests.insert(path.clone());
+        }
         if let Some(index) = self
             .documents
             .iter()
             .position(|d| d.buffer.path.as_ref() == Some(&path))
-            && self.groups.iter().any(|g| g.tabs.contains(&index))
+            && (self.groups.iter().any(|g| g.tabs.contains(&index))
+                || self.documents[index].buffer.dirty()
+                || self.saving.contains(&path))
         {
             if !self.groups[self.group_active].tabs.contains(&index) {
                 self.groups[self.group_active].tabs.push(index);
             }
             self.preview_requests.remove(&path);
+            if !preview {
+                self.documents[index].preview = false;
+                self.groups[self.group_active]
+                    .views
+                    .entry(index)
+                    .or_default()
+                    .want_focus = true;
+                self.focus_requests.remove(&path);
+            }
             self.active = index;
             self.groups[self.group_active].active = Some(index);
             return;
@@ -409,7 +432,16 @@ impl EditorSpace {
                     } else if self.documents[index].buffer.dirty() {
                         message = Some("Reload skipped: this document has unsaved changes".into());
                     } else {
-                        self.documents[index] = document;
+                        self.documents[index].buffer = document.buffer;
+                        self.documents[index].parsed = None;
+                        self.documents[index].parse_requested = None;
+                        let len = self.documents[index].buffer.len_chars();
+                        for group in &mut self.groups {
+                            if let Some(view) = group.views.get_mut(&index) {
+                                view.selection.anchor = view.selection.anchor.min(len);
+                                view.selection.head = view.selection.head.min(len);
+                            }
+                        }
                     }
                     for (group, pinned) in targets {
                         if group >= self.groups.len() {
@@ -428,6 +460,18 @@ impl EditorSpace {
                         }
                     }
                     self.active = index;
+                    if let Some(path) = &self.documents[index].buffer.path
+                        && self.focus_requests.remove(path)
+                    {
+                        self.groups[self.group_active]
+                            .views
+                            .entry(index)
+                            .or_default()
+                            .want_focus = true;
+                    }
+                    if self.documents[index].pinned {
+                        self.documents[index].preview = false;
+                    }
                     if let Some(path) = self.documents[index].buffer.path.clone()
                         && let Some((bytes, stamp)) = self.pending_matches.remove(&path)
                         && let Err(error) = self.select_match(index, bytes, stamp)
@@ -467,6 +511,13 @@ impl EditorSpace {
             && self.saving.insert(path.clone())
         {
             self.files.save(document.buffer.clone());
+        }
+    }
+    pub fn save_all(&mut self) {
+        for index in 0..self.documents.len() {
+            if self.documents[index].buffer.dirty() {
+                self.save_document(index);
+            }
         }
     }
     pub fn save_active(&mut self) {
@@ -556,7 +607,7 @@ impl EditorSpace {
             egui::Window::new("Unsaved changes").collapsible(false).show(ctx,|ui|{
         ui.label(name);ui.label("Save this document or confirm discarding its unsaved changes before closing.");
         if ui.button("Save and close").clicked(){self.close_after_save.insert(index,self.group_active);self.save_document(index);}
-        if ui.button("Discard changes and close").clicked(){self.documents[index].buffer.revert_to_saved();self.close_clean(index);self.close_review.remove(0);}
+        if ui.add_enabled(self.documents[index].buffer.path.as_ref().is_none_or(|p| !self.saving.contains(p)), egui::Button::new("Discard changes and close")).clicked(){self.documents[index].buffer.revert_to_saved();self.close_clean(index);self.close_review.remove(0);}
         if ui.button("Cancel").clicked(){self.close_review.clear();self.close_after_save.clear();}
     });
         }
@@ -704,6 +755,29 @@ impl EditorSpace {
     pub fn restore_closed(&mut self) {
         self.action(TabAction::Restore);
         self.persist();
+    }
+    pub fn has_focus(&mut self, ctx: &egui::Context) -> bool {
+        for (owner, group) in self.groups.iter().enumerate() {
+            for (index, view) in &group.views {
+                if group.active == Some(*index)
+                    && view.focus.is_some_and(|id| ctx.memory(|m| m.has_focus(id)))
+                {
+                    self.group_active = owner;
+                    self.active = *index;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    pub fn focus_active(&mut self) {
+        if let Some(index) = self.groups[self.group_active].active {
+            self.groups[self.group_active]
+                .views
+                .entry(index)
+                .or_default()
+                .want_focus = true;
+        }
     }
     pub fn active_snapshot(&self) -> Option<buture_editor::TextSnapshot> {
         let index = self.groups[self.group_active].active?;
@@ -921,6 +995,7 @@ pub enum EditCommand {
     MoveDown,
     Comment,
     Indent,
+    Tab,
     Outdent,
     Occurrence,
     CursorUp,
@@ -961,6 +1036,11 @@ pub fn execute(
                 buffer, &selected, marker,
             )?)
         }
+        EditCommand::Tab => Some(if selected.iter().all(Range::is_empty) {
+            buture_editor::operations::insert(buffer, &selected, "    ", false)?
+        } else {
+            buture_editor::operations::indent(buffer, &selected, false)?
+        }),
         EditCommand::Indent | EditCommand::Outdent => Some(buture_editor::operations::indent(
             buffer,
             &selected,
@@ -1042,7 +1122,7 @@ pub fn execute(
     Ok(())
 }
 fn input(ui: &mut Ui, buffer: &mut Buffer, view: &mut View) -> Result<bool, EditorError> {
-    let mut save = false;
+    let save = false;
     let initial = (buffer.revision, view.selection.head);
     let events = ui.input(|i| i.events.clone());
     for event in events {
@@ -1080,75 +1160,31 @@ fn input(ui: &mut Ui, buffer: &mut Buffer, view: &mut View) -> Result<bool, Edit
                 ..
             } => {
                 if modifiers.command
-                    && modifiers.alt
-                    && matches!(key, Key::ArrowUp | Key::ArrowDown)
+                    || modifiers.ctrl
+                    || (cfg!(target_os = "macos")
+                        && modifiers.alt
+                        && matches!(key, Key::ArrowLeft | Key::ArrowRight))
                 {
-                    execute(
-                        buffer,
-                        view,
-                        if key == Key::ArrowUp {
-                            EditCommand::CursorUp
-                        } else {
-                            EditCommand::CursorDown
-                        },
-                        None,
-                    )?;
-                } else if modifiers.alt && matches!(key, Key::ArrowUp | Key::ArrowDown) {
-                    execute(
-                        buffer,
-                        view,
-                        if modifiers.shift {
-                            EditCommand::Duplicate
-                        } else if key == Key::ArrowUp {
-                            EditCommand::MoveUp
-                        } else {
-                            EditCommand::MoveDown
-                        },
-                        None,
-                    )?;
-                } else if modifiers.command {
-                    match key {
-                        Key::S => save = true,
-                        Key::A => execute(buffer, view, EditCommand::SelectAll, None)?,
-                        Key::Z => execute(
-                            buffer,
-                            view,
-                            if modifiers.shift {
-                                EditCommand::Redo
-                            } else {
-                                EditCommand::Undo
-                            },
-                            None,
-                        )?,
-                        Key::Y => execute(buffer, view, EditCommand::Redo, None)?,
-                        Key::D => execute(buffer, view, EditCommand::Occurrence, None)?,
-                        Key::Slash => execute(buffer, view, EditCommand::Comment, None)?,
-                        Key::OpenBracket => execute(buffer, view, EditCommand::Outdent, None)?,
-                        Key::CloseBracket => execute(buffer, view, EditCommand::Indent, None)?,
-                        _ => {
-                            move_caret(buffer, &mut view.selection, key, modifiers.shift, true);
-                            for selection in &mut view.additional {
-                                move_caret(buffer, selection, key, modifiers.shift, true);
-                            }
+                    if matches!(
+                        key,
+                        Key::ArrowLeft
+                            | Key::ArrowRight
+                            | Key::ArrowUp
+                            | Key::ArrowDown
+                            | Key::Home
+                            | Key::End
+                    ) {
+                        move_caret(buffer, &mut view.selection, key, modifiers.shift, true);
+                        for selection in &mut view.additional {
+                            move_caret(buffer, selection, key, modifiers.shift, true);
                         }
                     }
-                } else {
+                } else if !modifiers.alt {
                     match key {
                         Key::Enter => {
                             let result = buture_editor::operations::newline(buffer, &ranges(view))?;
                             assign(view, result);
                         }
-                        Key::Tab => execute(
-                            buffer,
-                            view,
-                            if modifiers.shift {
-                                EditCommand::Outdent
-                            } else {
-                                EditCommand::Indent
-                            },
-                            None,
-                        )?,
-                        Key::Escape => view.additional.clear(),
                         Key::Backspace | Key::Delete => {
                             for selection in std::iter::once(&mut view.selection)
                                 .chain(view.additional.iter_mut())
@@ -1287,6 +1323,15 @@ fn render_parsed(
     let parsed =
         parsed.filter(|p| p.revision == buffer.revision && p.content_id == buffer.content_id());
     view.focus = Some(id);
+    if view.want_focus {
+        ui.memory_mut(|m| m.request_focus(id));
+        view.want_focus = false;
+    }
+    for selection in &mut view.additional {
+        selection.head = selection.head.min(buffer.len_chars());
+        selection.anchor = selection.anchor.min(buffer.len_chars());
+    }
+
     if view.fold_revision != buffer.revision {
         view.folded.clear();
         view.fold_revision = buffer.revision;
@@ -1507,6 +1552,52 @@ fn render_parsed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn background_reload_preserves_tab_metadata_and_local_edits() {
+        let root = std::env::temp_dir().join(format!("buture-ui-reload-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("fixture");
+        let path = root.join("main.rs");
+        std::fs::write(&path, "fn main() {}\n").expect("source");
+        let mut space = EditorSpace::default();
+        let poll = |space: &mut EditorSpace| {
+            let started = std::time::Instant::now();
+            while !space.loading.is_empty() {
+                space.poll();
+                assert!(started.elapsed() < std::time::Duration::from_secs(3));
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        space.set_workspace(root.clone());
+        space.open(root.clone(), path.clone());
+        poll(&mut space);
+        space.documents[0].pinned = true;
+        space.documents[0].preview = false;
+        std::fs::write(&path, "fn changed() {}\n").expect("external edit");
+        space.reload_clean(std::slice::from_ref(&path));
+        poll(&mut space);
+        assert!(space.documents[0].pinned);
+        assert!(!space.documents[0].preview);
+        assert_eq!(
+            space.documents[0].buffer.rope().to_string(),
+            "fn changed() {}\n"
+        );
+        space.reload_clean(std::slice::from_ref(&path));
+        space.documents[0]
+            .buffer
+            .insert(0, "// local\n")
+            .expect("edit");
+        poll(&mut space);
+        assert!(space.documents[0].buffer.dirty());
+        assert!(
+            space.documents[0]
+                .buffer
+                .rope()
+                .to_string()
+                .starts_with("// local")
+        );
+        drop(space);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
     #[test]
     fn keyboard_edits_utf8_without_rebuilding_a_whole_document() {
         let ctx = egui::Context::default();

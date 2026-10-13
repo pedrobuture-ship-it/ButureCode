@@ -10,3 +10,6 @@ description = "Appearance preferences and future layered settings."
 
 [lints]
 workspace = true
+
+[dependencies]
+buture-core = { path = "../buture-core" }

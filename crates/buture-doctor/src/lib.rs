@@ -178,6 +178,22 @@ pub fn diagnose(reports: &[Toolchain], facts: &Facts, required: &[String]) -> Re
         "Host variables inspected; no private values displayed",
         manual("Set the host home/shell explicitly if they are missing."),
     ));
+    for language in required {
+        if !reports.iter().any(|r| {
+            r.language == *language
+                || (r.language == "C/C++" && ["C", "C++"].contains(&language.as_str()))
+                || (r.language == "Node.js" && language == "TypeScript")
+        }) {
+            diagnostics.push(diagnostic(
+                "Toolchains",
+                format!("{language} not assessed"),
+                "No toolchain provider reported evidence for this language",
+                Severity::Warning,
+                "Unsupported or incomplete scan",
+                manual("Review this language's tools manually; readiness has not been verified."),
+            ));
+        }
+    }
     for report in reports {
         let relevant = required.iter().any(|l| {
             l == &report.language
@@ -408,6 +424,15 @@ mod tests {
         assert_eq!(
             diagnose(std::slice::from_ref(&report), &facts(), &["C++".into()]).status,
             Status::Ready
+        );
+        assert_eq!(
+            diagnose(
+                std::slice::from_ref(&report),
+                &facts(),
+                &["C++".into(), "Unsupported".into()]
+            )
+            .status,
+            Status::NeedsAttention
         );
         assert_eq!(
             diagnose(&[report], &facts(), &[]).status,

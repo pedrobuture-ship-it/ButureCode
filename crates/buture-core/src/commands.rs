@@ -151,6 +151,7 @@ impl CommandRegistry {
                 Editor("comment"),
             ),
             ("editor.indent", "Indent", Editing, Editor("indent")),
+            ("editor.tab", "Insert Indentation", Editing, Editor("tab")),
             ("editor.outdent", "Outdent", Editing, Editor("outdent")),
             (
                 "editor.occurrence",

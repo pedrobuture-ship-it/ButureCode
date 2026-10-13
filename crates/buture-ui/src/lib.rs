@@ -16,5 +16,6 @@ pub mod overview;
 pub mod palette;
 pub mod quick_open;
 pub mod search;
+pub mod shortcuts;
 pub mod syntax;
 pub mod toolchains;

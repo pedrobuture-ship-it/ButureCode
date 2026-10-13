@@ -556,6 +556,9 @@ dependencies = [
 [[package]]
 name = "buture-settings"
 version = "0.1.0"
+dependencies = [
+ "buture-core",
+]
 
 [[package]]
 name = "buture-tasks"

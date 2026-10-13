@@ -101,7 +101,8 @@ impl QuickOpen {
                     generation,
                     files,
                 } if self.root.as_ref() == Some(&root) && generation == self.generation => {
-                    self.files = files
+                    self.files = files;
+                    self.returned = Some(generation);
                 }
                 buture_search::index::Event::Failed { root, message }
                     if self.root.as_ref() == Some(&root) =>

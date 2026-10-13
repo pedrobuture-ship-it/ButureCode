@@ -1,4 +1,4 @@
-//! Native application boundary. No workspace commands or network access.
+//! Native application boundary initializes the shell and its domain workers.
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
