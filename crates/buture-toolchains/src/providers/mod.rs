@@ -1,4 +1,5 @@
-//! Independent providers share bounded discovery machinery.
+pub mod rust;
+// Independent providers share bounded discovery machinery.
 use crate::engine::{ToolSpec, ToolchainProvider};
 pub struct Provider {
     pub language: &'static str,
@@ -15,15 +16,7 @@ impl ToolchainProvider for Provider {
 pub fn registry() -> Vec<Box<dyn ToolchainProvider>> {
     use crate::engine::Role::*;
     vec![
-        Box::new(Provider {
-            language: "Rust",
-            specs: || {
-                vec![
-                    ToolSpec::new("rustc", Compiler),
-                    ToolSpec::new("cargo", PackageManager),
-                ]
-            },
-        }),
+        Box::new(rust::Rust),
         Box::new(Provider {
             language: "C/C++",
             specs: || {
