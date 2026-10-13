@@ -13,3 +13,9 @@ workspace = true
 
 [dependencies]
 buture-core = { path = "../buture-core" }
+buture-ui = { path = "../buture-ui" }
+eframe.workspace = true
+
+[dev-dependencies]
+buture-settings = { path = "../buture-settings" }
+png = "=0.18.1"
