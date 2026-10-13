@@ -108,6 +108,12 @@ pub struct IdeShell {
     scan: Option<buture_toolchains::engine::Scan>,
     reports: Vec<buture_toolchains::engine::Toolchain>,
     show_toolchains: bool,
+    doctor: Option<buture_doctor::Report>,
+    doctor_scan: Option<buture_doctor::Scan>,
+    doctor_requested: bool,
+    show_doctor: bool,
+    doctor_selected: Option<usize>,
+    manual_fix: Option<(String, String)>,
     setup: Option<buture_toolchains::install::SetupHost>,
     install_plan: Option<buture_toolchains::install::Plan>,
     install_confirmed: bool,
@@ -147,6 +153,12 @@ impl IdeShell {
             reports: Vec::new(),
             show_toolchains: false,
             setup: None,
+            doctor: None,
+            doctor_scan: None,
+            doctor_requested: false,
+            show_doctor: false,
+            doctor_selected: None,
+            manual_fix: None,
             install_plan: None,
             install_confirmed: false,
             installation: None,
@@ -174,7 +186,30 @@ impl IdeShell {
     pub fn open_workspace(&self, path: std::path::PathBuf) {
         self.workspace.send(buture_workspace::Request::Open(path));
     }
+    pub fn open_doctor(&mut self) {
+        self.show_doctor = true;
+        self.show_toolchains = false;
+        self.doctor_requested = true;
+        self.doctor = None;
+        self.doctor_selected = None;
+        if self.host.is_none() {
+            self.initialize_environment();
+            self.pending_scan = true;
+        } else {
+            self.start_scan(self.required_languages());
+        }
+    }
+    fn required_languages(&self) -> Vec<String> {
+        self.settings
+            .get("Languages.selected")
+            .unwrap_or("")
+            .split(',')
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect()
+    }
     pub fn open_toolchain_manager(&mut self) {
+        self.show_doctor = false;
         self.active = 7;
         self.show_toolchains = true;
         self.pending_scan = true;
@@ -195,7 +230,7 @@ impl IdeShell {
         self.install_plan.is_some()
     }
     pub fn environment_scan_pending(&self) -> bool {
-        self.pending_scan || self.scan.is_some()
+        self.pending_scan || self.scan.is_some() || self.doctor_scan.is_some()
     }
     /// Preview first run without reading or writing personal preferences.
     pub fn preview_onboarding(&mut self) {
@@ -216,6 +251,7 @@ impl IdeShell {
             && let Some(host) = &self.host
         {
             self.scan_languages = languages.clone();
+            self.doctor = None;
             self.reports.clear();
             self.scan_summary = None;
             self.onboarding.scanned = false;
@@ -226,6 +262,14 @@ impl IdeShell {
         }
     }
     pub fn show(&mut self, ctx: &Context) {
+        if let Some(scan) = &self.doctor_scan
+            && let Ok(report) = scan.events.try_recv()
+        {
+            self.doctor = Some(report);
+            self.doctor_scan = None;
+            self.doctor_requested = false;
+        }
+
         let mut complete = false;
         if let Some(scan) = &self.scan {
             while let Ok(event) = scan.events.try_recv() {
@@ -241,6 +285,16 @@ impl IdeShell {
             self.scan = None;
             self.reports.sort_by(|a, b| a.language.cmp(&b.language));
             self.scan_summary = Some(crate::toolchains::summary(&self.reports));
+            if self.doctor_requested
+                && let Some(host) = &self.host
+            {
+                self.doctor_scan = Some(buture_doctor::Scan::start(
+                    host.clone(),
+                    self.reports.clone(),
+                    self.root.clone(),
+                    self.required_languages(),
+                ));
+            }
         }
 
         if let Some(p) = &self.preferences {
@@ -269,7 +323,11 @@ impl IdeShell {
         }
         if self.pending_scan && self.host.is_some() {
             self.pending_scan = false;
-            self.start_scan(Vec::new());
+            self.start_scan(if self.doctor_requested {
+                self.required_languages()
+            } else {
+                Vec::new()
+            });
         }
         while let Ok(event) = self.workspace.events.try_recv() {
             match event {
@@ -464,6 +522,8 @@ impl IdeShell {
                             self.workspace.send(buture_workspace::Request::Collapse);
                         }
                     });
+                    side.horizontal(|ui|{if ui.small_button("Doctor").clicked(){self.open_doctor();}
+if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=false;}});
                     side.separator();
                     if self.explorer.rows.is_empty() {
                         side.label("No folder open");
@@ -518,7 +578,24 @@ impl IdeShell {
                     sidebar(&mut side, &theme, self.active);
                 }
                 let mut center = region(ui, "editor", layout.editor.shrink(theme.spacing.md));
-                if self.active == 7 && self.show_toolchains {
+                if self.show_doctor {
+                    if let Some(action)=crate::doctor::show(&mut center,&theme,self.doctor.as_ref(),self.scan.is_some() || self.doctor_scan.is_some(),&mut self.doctor_selected){
+                        match action {
+                            crate::doctor::Action::Scan=>self.open_doctor(),
+                            crate::doctor::Action::Fix(index)=>{
+                                if let Some(d)=self.doctor.as_ref().and_then(|r|r.diagnostics.get(index)){
+                                    match &d.solution{
+                                        buture_doctor::Solution::InstallTool(tool)=>{
+                                            self.install_plan=self.setup.as_ref().and_then(|h|buture_toolchains::install::Plan::for_tool(tool,h));self.install_confirmed=false;
+                                            if self.install_plan.is_none(){self.manual_fix=Some((d.title.clone(),"No assisted installer is supported for this tool and host. Review its official installation instructions.".into()));}
+                                        }
+                                        buture_doctor::Solution::Manual(steps)=>self.manual_fix=Some((d.title.clone(),steps.clone())),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if self.active == 7 && self.show_toolchains {
                     if let Some(action) = crate::toolchains::show(
                         &mut center,
                         &self.reports,
@@ -588,6 +665,21 @@ impl IdeShell {
     }
 
     fn install_dialogs(&mut self, ctx: &Context) {
+        if let Some((title, steps)) = self.manual_fix.clone() {
+            egui::Window::new("Review Doctor fix")
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.heading(title);
+                    ui.label(steps);
+                    ui.label(
+                        "These are manual instructions. Doctor has not changed your environment.",
+                    );
+                    if ui.button("Close review").clicked() {
+                        self.manual_fix = None;
+                    }
+                });
+        }
+
         let mut finished = None;
         if let Some(installation) = &self.installation {
             while let Ok(event) = installation.events.try_recv() {

@@ -8,6 +8,7 @@ pub use theme::Theme;
 pub mod shell;
 pub use shell::IdeShell;
 
+pub mod doctor;
 pub mod explorer;
 pub mod onboarding;
 pub mod toolchains;
