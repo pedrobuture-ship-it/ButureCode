@@ -179,6 +179,10 @@ impl IdeShell {
     }
 
     pub fn start_preferences(&mut self) {
+        if let Some(path) = buture_settings::user_path() {
+            self.editors
+                .configure_session(path.with_file_name("editor-session.json"));
+        }
         self.preferences = Some(buture_settings::Preferences::start());
         self.initialize_environment();
     }
@@ -193,6 +197,16 @@ impl IdeShell {
     }
     pub fn open_workspace(&self, path: std::path::PathBuf) {
         self.workspace.send(buture_workspace::Request::Open(path));
+    }
+    pub fn persist_session(&self) {
+        self.editors.flush_session();
+    }
+    pub fn split_editor(&mut self, vertical: bool) {
+        self.editors.split(if vertical {
+            buture_editor::session::Orientation::Vertical
+        } else {
+            buture_editor::session::Orientation::Horizontal
+        });
     }
     pub fn open_file(&mut self, path: std::path::PathBuf) {
         if let Some(root) = &self.root {
@@ -399,6 +413,7 @@ impl IdeShell {
                     }
                     if self.root.as_ref() != Some(&root) {
                         self.preview = None;
+                        self.editors.set_workspace(root.clone());
                         self.project = None;
                         self.project_scan = Some(buture_project::Scan::start(root.clone()));
                         self.doctor = None;

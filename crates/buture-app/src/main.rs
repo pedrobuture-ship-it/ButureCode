@@ -27,6 +27,9 @@ struct ButureApp {
 }
 
 impl eframe::App for ButureApp {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.shell.persist_session();
+    }
     fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
         self.shell.show(ctx);
     }

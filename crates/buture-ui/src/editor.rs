@@ -3,7 +3,7 @@ use crate::Theme;
 use buture_editor::{Buffer, EditorError, FileEvent, Files};
 use egui::{Color32, Event, FontId, Key, RichText, Sense, Stroke, Ui, pos2, text::CCursor, vec2};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     ops::Range,
     path::{Path, PathBuf},
 };
@@ -24,6 +24,8 @@ impl Selection {
 pub struct View {
     pub selection: Selection,
     pub follow_caret: bool,
+    scroll: egui::Vec2,
+    dragging: bool,
 }
 pub struct Document {
     pub buffer: Buffer,
@@ -33,6 +35,7 @@ pub struct Document {
 }
 #[derive(Default)]
 pub struct Group {
+    views: BTreeMap<usize, View>,
     pub tabs: Vec<usize>,
     pub active: Option<usize>,
 }
@@ -47,7 +50,14 @@ pub struct EditorSpace {
     preview_requests: BTreeSet<PathBuf>,
     closed: Vec<usize>,
     close_review: Vec<usize>,
-    close_after_save: BTreeSet<usize>,
+    close_after_save: BTreeMap<usize, usize>,
+    orientation: buture_editor::session::Orientation,
+    session: Option<buture_editor::session::Store>,
+    workspace: Option<PathBuf>,
+    session_loaded: bool,
+    opening_groups: BTreeMap<PathBuf, Vec<(usize, bool)>>,
+    restored_active: BTreeMap<usize, PathBuf>,
+    close_owners: BTreeMap<usize, usize>,
 }
 impl Default for EditorSpace {
     fn default() -> Self {
@@ -62,7 +72,14 @@ impl Default for EditorSpace {
             preview_requests: BTreeSet::new(),
             closed: Vec::new(),
             close_review: Vec::new(),
-            close_after_save: BTreeSet::new(),
+            close_after_save: BTreeMap::new(),
+            orientation: Default::default(),
+            session: None,
+            workspace: None,
+            session_loaded: false,
+            opening_groups: BTreeMap::new(),
+            restored_active: BTreeMap::new(),
+            close_owners: BTreeMap::new(),
         }
     }
 }
@@ -74,8 +91,80 @@ enum TabAction {
     Pin(usize),
     Keep(usize),
     Restore,
+    Move(usize),
 }
 impl EditorSpace {
+    pub fn configure_session(&mut self, path: PathBuf) {
+        self.session = Some(buture_editor::session::Store::start(path));
+    }
+    pub fn set_workspace(&mut self, root: PathBuf) {
+        self.persist();
+        self.workspace = Some(root.clone());
+        self.session_loaded = false;
+        if let Some(store) = &self.session {
+            store.load(root);
+        } else {
+            self.session_loaded = true;
+        }
+    }
+    pub fn persist(&self) {
+        if !self.session_loaded || !self.loading.is_empty() {
+            return;
+        }
+        if let (Some(store), Some(root)) = (&self.session, &self.workspace) {
+            let groups = self
+                .groups
+                .iter()
+                .map(|g| buture_editor::session::Group {
+                    tabs: g
+                        .tabs
+                        .iter()
+                        .filter_map(|i| {
+                            let document = &self.documents[*i];
+                            document
+                                .buffer
+                                .path
+                                .as_ref()
+                                .filter(|p| p.starts_with(root))
+                                .map(|p| buture_editor::session::Tab {
+                                    path: p.clone(),
+                                    pinned: document.pinned,
+                                })
+                        })
+                        .collect(),
+                    active: g.active.and_then(|i| self.documents[i].buffer.path.clone()),
+                })
+                .collect();
+            store.save(buture_editor::session::Layout {
+                workspace: root.clone(),
+                orientation: self.orientation,
+                groups,
+            });
+        }
+    }
+    pub fn flush_session(&self) {
+        self.persist();
+        if let Some(store) = &self.session {
+            store.flush();
+        }
+    }
+    pub fn split(&mut self, orientation: buture_editor::session::Orientation) {
+        if self.groups.len() >= 4 {
+            return;
+        }
+        let active = self.groups[self.group_active].active;
+        let mut group = Group {
+            active,
+            ..Default::default()
+        };
+        if let Some(index) = active {
+            group.tabs.push(index);
+        }
+        self.groups.push(group);
+        self.orientation = orientation;
+        self.group_active = self.groups.len() - 1;
+        self.persist();
+    }
     pub fn open_preview(&mut self, root: PathBuf, path: PathBuf) {
         self.preview_requests.insert(path.clone());
         self.open(root, path);
@@ -95,9 +184,19 @@ impl EditorSpace {
             self.groups[self.group_active].active = Some(index);
             return;
         }
+        self.opening_groups
+            .entry(path.clone())
+            .or_default()
+            .push((self.group_active, false));
         if self.loading.insert(path.clone()) {
             self.files.open(root, path);
         }
+    }
+    fn close_clean_in(&mut self, index: usize, owner: usize) {
+        let previous = self.group_active;
+        self.group_active = owner;
+        self.close_clean(index);
+        self.group_active = previous.min(self.groups.len() - 1);
     }
     fn close_clean(&mut self, index: usize) {
         let group = &mut self.groups[self.group_active];
@@ -118,6 +217,7 @@ impl EditorSpace {
             if self.documents[index].buffer.dirty() {
                 if !self.close_review.contains(&index) {
                     self.close_review.push(index);
+                    self.close_owners.insert(index, self.group_active);
                 }
             } else {
                 self.close_clean(index);
@@ -157,6 +257,22 @@ impl EditorSpace {
                 self.documents[i].preview = false;
             }
             TabAction::Keep(i) => self.documents[i].preview = false,
+            TabAction::Move(index) => {
+                let from = self.group_active;
+                let target = (from + 1) % self.groups.len();
+                if from != target {
+                    self.groups[from].tabs.retain(|i| *i != index);
+                    if self.groups[from].active == Some(index) {
+                        self.groups[from].active = self.groups[from].tabs.last().copied();
+                    }
+                    if !self.groups[target].tabs.contains(&index) {
+                        self.groups[target].tabs.push(index);
+                    }
+                    self.groups[target].active = Some(index);
+                    self.group_active = target;
+                    self.active = index;
+                }
+            }
             TabAction::Restore => {
                 if let Some(index) = self.closed.pop()
                     && !self.groups[self.group_active].tabs.contains(&index)
@@ -169,6 +285,41 @@ impl EditorSpace {
         }
     }
     pub fn poll(&mut self) -> Option<String> {
+        if let Some(store) = &self.session
+            && let Ok(event) = store.events.try_recv()
+        {
+            match event {
+                buture_editor::session::Event::Failed(error) => {
+                    self.session_loaded = false;
+                    return Some(error.to_string());
+                }
+                buture_editor::session::Event::Loaded(layout) => {
+                    self.session_loaded = true;
+                    if let Some(layout) = layout
+                        && self.documents.iter().all(|d| !d.buffer.dirty())
+                    {
+                        self.groups = (0..layout.groups.len()).map(|_| Group::default()).collect();
+                        self.group_active = 0;
+                        self.orientation = layout.orientation;
+                        for (index, group) in layout.groups.into_iter().enumerate() {
+                            if let Some(active) = group.active {
+                                self.restored_active.insert(index, active);
+                            }
+                            for tab in group.tabs {
+                                self.opening_groups
+                                    .entry(tab.path.clone())
+                                    .or_default()
+                                    .push((index, tab.pinned));
+                                if self.loading.insert(tab.path.clone()) {
+                                    self.files.open(layout.workspace.clone(), tab.path);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let mut message = None;
         while let Ok(event) = self.files.events.try_recv() {
             match event {
@@ -177,6 +328,11 @@ impl EditorSpace {
                         .path
                         .as_ref()
                         .is_some_and(|p| self.preview_requests.remove(p));
+                    let targets = buffer
+                        .path
+                        .as_ref()
+                        .and_then(|p| self.opening_groups.remove(p))
+                        .unwrap_or_else(|| vec![(self.group_active, false)]);
                     if let Some(path) = &buffer.path {
                         self.loading.remove(path);
                     }
@@ -208,11 +364,24 @@ impl EditorSpace {
                     } else {
                         self.documents[index] = document;
                     }
-                    if !self.groups[self.group_active].tabs.contains(&index) {
-                        self.groups[self.group_active].tabs.push(index);
+                    for (group, pinned) in targets {
+                        if group >= self.groups.len() {
+                            continue;
+                        }
+                        self.documents[index].pinned |= pinned;
+                        if !self.groups[group].tabs.contains(&index) {
+                            self.groups[group].tabs.push(index);
+                        }
+                        let preferred = self.restored_active.get(&group);
+                        if preferred.is_none()
+                            || self.groups[group].active.is_none()
+                            || preferred == self.documents[index].buffer.path.as_ref()
+                        {
+                            self.groups[group].active = Some(index);
+                        }
                     }
                     self.active = index;
-                    self.groups[self.group_active].active = Some(index);
+                    self.persist();
                 }
                 FileEvent::Saved(saved) => {
                     self.saving.remove(&saved.path);
@@ -222,10 +391,10 @@ impl EditorSpace {
                         .position(|d| d.buffer.path.as_ref() == Some(&saved.path))
                     {
                         self.documents[index].buffer.accept_saved(saved);
-                        if self.close_after_save.remove(&index)
+                        if let Some(group) = self.close_after_save.remove(&index)
                             && !self.documents[index].buffer.dirty()
                         {
-                            self.close_clean(index);
+                            self.close_clean_in(index, group);
                             self.close_review.retain(|i| *i != index);
                         }
                     }
@@ -250,11 +419,11 @@ impl EditorSpace {
     pub fn save_active(&mut self) {
         self.save_document(self.active);
     }
-    fn tab_bar(&mut self, ui: &mut Ui) -> bool {
+    fn tab_bar(&mut self, ui: &mut Ui, owner: usize) -> bool {
         let mut action = None;
         let mut save = false;
         ui.horizontal_wrapped(|ui| {
-            for index in self.groups[self.group_active].tabs.clone() {
+            for index in self.groups[owner].tabs.clone() {
                 let document = &self.documents[index];
                 let name = document
                     .buffer
@@ -278,16 +447,20 @@ impl EditorSpace {
                 } else {
                     RichText::new(label)
                 };
-                let response =
-                    ui.selectable_label(self.groups[self.group_active].active == Some(index), text);
+                let response = ui.selectable_label(self.groups[owner].active == Some(index), text);
                 if response.clicked() {
+                    self.group_active = owner;
                     self.active = index;
-                    self.groups[self.group_active].active = Some(index);
+                    self.groups[owner].active = Some(index);
                 }
                 if response.double_clicked() {
                     action = Some(TabAction::Keep(index));
                 }
                 response.context_menu(|ui| {
+                    if self.groups.len() > 1 && ui.button("Move to next group").clicked() {
+                        action = Some(TabAction::Move(index));
+                        ui.close();
+                    }
                     for (label, event) in [
                         ("Close", TabAction::Close(index)),
                         ("Close others", TabAction::Others(index)),
@@ -313,7 +486,9 @@ impl EditorSpace {
             }
         });
         if let Some(action) = action {
+            self.group_active = owner;
             self.action(action);
+            self.persist();
         }
         save
     }
@@ -327,17 +502,16 @@ impl EditorSpace {
                 .unwrap_or_else(|| "Untitled".into());
             egui::Window::new("Unsaved changes").collapsible(false).show(ctx,|ui|{
         ui.label(name);ui.label("Save this document or confirm discarding its unsaved changes before closing.");
-        if ui.button("Save and close").clicked(){self.close_after_save.insert(index);self.save_document(index);}
+        if ui.button("Save and close").clicked(){self.close_after_save.insert(index,self.group_active);self.save_document(index);}
         if ui.button("Discard changes and close").clicked(){self.documents[index].buffer.revert_to_saved();self.close_clean(index);self.close_review.remove(0);}
         if ui.button("Cancel").clicked(){self.close_review.clear();self.close_after_save.clear();}
     });
         }
     }
-    pub fn show(&mut self, ui: &mut Ui, theme: &Theme) -> Option<String> {
-        self.close_dialog(ui.ctx());
-        let mut save = self.tab_bar(ui);
+    fn show_group(&mut self, ui: &mut Ui, theme: &Theme, owner: usize) -> Option<String> {
+        let mut save = self.tab_bar(ui, owner);
         ui.separator();
-        let Some(active) = self.groups[self.group_active].active else {
+        let Some(active) = self.groups[owner].active else {
             if !self.loading.is_empty() {
                 ui.spinner();
             } else {
@@ -345,18 +519,81 @@ impl EditorSpace {
             }
             return None;
         };
-        self.active = active;
+        if ui.rect_contains_pointer(ui.max_rect()) && ui.input(|i| i.pointer.any_pressed()) {
+            self.group_active = owner;
+            self.active = active;
+        }
         let document = &mut self.documents[active];
         if document.buffer.dirty() {
             document.preview = false;
         }
+        let view = self.groups[owner].views.entry(active).or_default();
         let mut error = None;
-        match render(ui, theme, &mut document.buffer, &mut document.view) {
+        match render(ui, theme, &mut document.buffer, view) {
             Ok(request) => save |= request,
             Err(e) => error = Some(e.to_string()),
         }
         if save {
-            self.save_active();
+            self.save_document(active);
+        }
+        error
+    }
+    pub fn show(&mut self, ui: &mut Ui, theme: &Theme) -> Option<String> {
+        self.close_dialog(ui.ctx());
+        let mut error = None;
+        ui.horizontal(|ui| {
+            if ui.small_button("Split right").clicked() {
+                self.split(buture_editor::session::Orientation::Horizontal);
+            }
+            if ui.small_button("Split down").clicked() {
+                self.split(buture_editor::session::Orientation::Vertical);
+            }
+            if self.groups.len() > 1 && ui.small_button("Merge groups").clicked() {
+                let mut tabs = Vec::new();
+                for group in &self.groups {
+                    for index in &group.tabs {
+                        if !tabs.contains(index) {
+                            tabs.push(*index);
+                        }
+                    }
+                }
+                let active = Some(self.active).filter(|i| tabs.contains(i));
+                self.groups = vec![Group {
+                    tabs,
+                    active,
+                    ..Default::default()
+                }];
+                self.group_active = 0;
+                self.persist();
+            }
+        });
+        let count = self.groups.len();
+        match self.orientation {
+            buture_editor::session::Orientation::Horizontal => ui.columns(count, |columns| {
+                for (index, column) in columns.iter_mut().enumerate() {
+                    column.push_id(index, |ui| {
+                        if let Some(e) = self.show_group(ui, theme, index) {
+                            error = Some(e);
+                        }
+                    });
+                }
+            }),
+            buture_editor::session::Orientation::Vertical => {
+                let height = (ui.available_height() / count as f32 - 8.0).max(100.0);
+                for index in 0..count {
+                    let (rect, _) =
+                        ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+                    let mut child = ui.new_child(
+                        egui::UiBuilder::new()
+                            .id_salt(("editor-group", index))
+                            .max_rect(rect),
+                    );
+                    child.set_clip_rect(rect);
+                    if let Some(e) = self.show_group(&mut child, theme, index) {
+                        error = Some(e);
+                    }
+                }
+            }
         }
         error
     }
@@ -462,6 +699,7 @@ fn insert(buffer: &mut Buffer, selection: &mut Selection, text: &str) -> Result<
 }
 fn input(ui: &mut Ui, buffer: &mut Buffer, view: &mut View) -> Result<bool, EditorError> {
     let mut save = false;
+    let initial = (buffer.revision, view.selection.head);
     let events = ui.input(|i| i.events.clone());
     for event in events {
         match event {
@@ -551,6 +789,9 @@ fn input(ui: &mut Ui, buffer: &mut Buffer, view: &mut View) -> Result<bool, Edit
             _ => {}
         }
     }
+    if initial != (buffer.revision, view.selection.head) {
+        view.follow_caret = true;
+    }
     Ok(save)
 }
 fn expand_tabs(source: &str) -> (String, Vec<usize>) {
@@ -598,12 +839,26 @@ pub fn render(
         .id_salt("code-scroll")
         .auto_shrink([false, false]);
     if view.follow_caret {
-        scroll = scroll.vertical_scroll_offset(
-            (caret_row as f32 * row_height - ui.available_height() * 0.4).max(0.0),
-        );
+        let y = caret_row as f32 * row_height;
+        let height = ui.available_height() - 32.0;
+        if y < view.scroll.y {
+            scroll = scroll.vertical_scroll_offset(y);
+        } else if y + row_height > view.scroll.y + height {
+            scroll = scroll.vertical_scroll_offset((y + row_height - height).max(0.0));
+        }
+        let column = buffer.position(view.selection.head)?.1;
+        let x = column as f32 * char_width + gutter;
+        if x < view.scroll.x + gutter {
+            scroll = scroll.horizontal_scroll_offset((x - gutter).max(0.0));
+        } else if x > view.scroll.x + ui.available_width() - 24.0 {
+            scroll = scroll.horizontal_scroll_offset((x - ui.available_width() + 48.0).max(0.0));
+        }
         view.follow_caret = false;
     }
-    scroll.show_rows(ui, row_height, buffer.line_count(), |ui, range| {
+    if !ui.input(|i| i.pointer.primary_down()) {
+        view.dragging = false;
+    }
+    let output = scroll.show_rows(ui, row_height, buffer.line_count(), |ui, range| {
         ui.set_min_width(
             (buffer.width_hint.min(100_000) as f32 * char_width + gutter + 20.0)
                 .max(ui.available_width()),
@@ -621,8 +876,22 @@ pub fn render(
             );
             let text_pos = pos2(rect.left() + gutter, rect.top() + 2.0);
             let start = buffer.line_start(row).unwrap_or(0);
-            if (response.clicked() || response.dragged())
-                && let Some(pointer) = response.interact_pointer_pos()
+            if response.drag_started() {
+                view.dragging = true;
+                if !ui.input(|i| i.modifiers.shift)
+                    && let Some(origin) = ui.input(|i| i.pointer.press_origin())
+                {
+                    let column = galley
+                        .cursor_from_pos(origin - text_pos)
+                        .index
+                        .min(map.len() - 1);
+                    view.selection.anchor = start + map[column];
+                }
+            }
+            if (response.clicked()
+                || response.dragged()
+                || (view.dragging && ui.rect_contains_pointer(rect)))
+                && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
             {
                 let display_col = galley
                     .cursor_from_pos(pointer - text_pos)
@@ -677,6 +946,7 @@ pub fn render(
                 .galley(text_pos, galley, theme.text.primary.into());
         }
     });
+    view.scroll = output.state.offset;
     let (row, col) = buffer.position(view.selection.head)?;
     ui.label(
         RichText::new(format!(
@@ -780,5 +1050,31 @@ mod tests {
         space.action(TabAction::Restore);
         assert!(space.groups[0].tabs.contains(&0));
         assert!(space.documents[2].buffer.dirty());
+    }
+    #[test]
+    fn split_views_share_buffers_and_move_tabs() {
+        let mut space = EditorSpace::default();
+        space.documents.push(Document {
+            buffer: Buffer::from_text("shared"),
+            view: View::default(),
+            pinned: false,
+            preview: false,
+        });
+        space.groups[0].tabs = vec![0];
+        space.groups[0].active = Some(0);
+        space.split(buture_editor::session::Orientation::Horizontal);
+        assert_eq!(space.groups[1].tabs, vec![0]);
+        space.documents[0]
+            .buffer
+            .insert(0, "edited ")
+            .expect("edit");
+        assert!(space.documents[space.groups[0].tabs[0]].buffer.dirty());
+        space.action(TabAction::Move(0));
+        assert!(space.groups[1].tabs.is_empty());
+        assert_eq!(space.groups[0].tabs, vec![0]);
+        assert_eq!(
+            space.documents[0].buffer.rope().to_string(),
+            "edited shared"
+        );
     }
 }

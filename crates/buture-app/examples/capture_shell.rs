@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 13] = [
+const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 14] = [
     ("full", VisualEffects::Full, [1440.0, 900.0], true, true),
     (
         "reduced",
@@ -35,6 +35,7 @@ const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 13] = [
     ),
     ("editor", VisualEffects::Full, [1440.0, 900.0], false, false),
     ("tabs", VisualEffects::Full, [1440.0, 900.0], false, false),
+    ("split", VisualEffects::Full, [1440.0, 900.0], false, false),
     (
         "overview",
         VisualEffects::Full,
@@ -155,6 +156,9 @@ impl eframe::App for Capture {
                 && let Ok(root) = std::env::current_dir()
             {
                 self.shell.open_file(root.join("Cargo.toml"));
+            }
+            if CASES[self.index].0 == "split" {
+                self.shell.split_editor(false);
             }
             if CASES[self.index].0 == "overview" {
                 self.shell.open_project_overview();

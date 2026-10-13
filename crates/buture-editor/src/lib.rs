@@ -376,6 +376,8 @@ impl Files {
         });
     }
 }
+pub mod session;
+
 #[cfg(test)]
 mod tests {
     use super::*;
