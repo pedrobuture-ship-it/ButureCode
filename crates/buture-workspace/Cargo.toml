@@ -6,7 +6,7 @@ rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "Future workspace state and file exploration."
+description = "Lazy workspace exploration, file operations and polling watcher."
 
 [lints]
 workspace = true

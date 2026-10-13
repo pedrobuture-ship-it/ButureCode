@@ -140,9 +140,16 @@ pub fn probe(path: &Path, arguments: &[&str], timeout: Duration) -> ProbeState {
             "Command script detected; direct version probe unsupported".into(),
         );
     }
+    let directory = match ProbeDirectory::new() {
+        Ok(d) => d,
+        Err(e) => return ProbeState::Failed(e.to_string()),
+    };
     let mut child = match Command::new(path)
         .args(arguments)
-        .current_dir(std::env::temp_dir())
+        .current_dir(&directory.0)
+        .env("RUSTUP_AUTO_INSTALL", "0")
+        .env("MISE_AUTO_INSTALL", "false")
+        .env("MISE_EXEC_AUTO_INSTALL", "false")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -152,7 +159,7 @@ pub fn probe(path: &Path, arguments: &[&str], timeout: Duration) -> ProbeState {
         Err(e) => return ProbeState::Failed(e.to_string()),
     };
     let (tx, rx) = mpsc::channel();
-    for stream in [
+    for (stream_index, stream) in [
         child
             .stdout
             .take()
@@ -164,12 +171,13 @@ pub fn probe(path: &Path, arguments: &[&str], timeout: Duration) -> ProbeState {
     ]
     .into_iter()
     .flatten()
+    .enumerate()
     {
         let tx = tx.clone();
         thread::spawn(move || {
             let mut bytes = Vec::new();
             let _ = stream.take(16 * 1024).read_to_end(&mut bytes);
-            let _ = tx.send(bytes);
+            let _ = tx.send((stream_index, bytes));
         });
     }
     drop(tx);
@@ -191,12 +199,12 @@ pub fn probe(path: &Path, arguments: &[&str], timeout: Duration) -> ProbeState {
         }
         thread::sleep(Duration::from_millis(15));
     };
-    let mut lines = Vec::new();
+    let mut lines: [Option<String>; 2] = [None, None];
     for _ in 0..2 {
-        if let Ok(bytes) = rx.recv_timeout(Duration::from_millis(100)) {
+        if let Ok((index, bytes)) = rx.recv_timeout(Duration::from_millis(100)) {
             let text = String::from_utf8_lossy(&bytes);
             if let Some(line) = text.lines().find(|s| !s.trim().is_empty()) {
-                lines.push(
+                lines[index] = Some(
                     line.chars()
                         .filter(|c| !c.is_control())
                         .take(300)
@@ -206,7 +214,7 @@ pub fn probe(path: &Path, arguments: &[&str], timeout: Duration) -> ProbeState {
         }
     }
     if status.success() {
-        match lines.into_iter().next() {
+        match lines.into_iter().flatten().next() {
             Some(version) => ProbeState::Ready(version),
             None => ProbeState::Failed("Tool returned no version".into()),
         }
@@ -214,6 +222,29 @@ pub fn probe(path: &Path, arguments: &[&str], timeout: Duration) -> ProbeState {
         ProbeState::Failed(format!("Version probe exited with {status}"))
     }
 }
+struct ProbeDirectory(PathBuf);
+impl ProbeDirectory {
+    fn new() -> std::io::Result<Self> {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("buture-probe-{}-{sequence}", std::process::id()));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&path)?;
+        Ok(Self(path))
+    }
+}
+impl Drop for ProbeDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir(&self.0);
+    }
+}
+
 pub fn child_bins(root: PathBuf) -> Vec<PathBuf> {
     std::fs::read_dir(root)
         .into_iter()
@@ -283,5 +314,32 @@ mod tests {
     fn probe_has_deadline() {
         let state = probe(Path::new("/bin/sleep"), &["2"], Duration::from_millis(30));
         assert_eq!(state, ProbeState::Failed("Version probe timed out".into()));
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn probes_disable_implicit_installation_and_avoid_project_cwd() {
+        assert_eq!(
+            probe(
+                Path::new("/usr/bin/printenv"),
+                &["RUSTUP_AUTO_INSTALL"],
+                Duration::from_secs(1)
+            ),
+            ProbeState::Ready("0".into())
+        );
+        assert_eq!(
+            probe(
+                Path::new("/usr/bin/printenv"),
+                &["MISE_AUTO_INSTALL"],
+                Duration::from_secs(1)
+            ),
+            ProbeState::Ready("false".into())
+        );
+        match probe(Path::new("/usr/bin/pwd"), &[], Duration::from_secs(1)) {
+            ProbeState::Ready(path) => {
+                assert!(path.contains("buture-probe-"));
+                assert!(!Path::new(&path).exists());
+            }
+            state => panic!("Unexpected probe: {state:?}"),
+        }
     }
 }

@@ -10,16 +10,11 @@ impl ToolchainProvider for Cpp {
     }
     fn specifications(&self) -> Vec<ToolSpec> {
         use Role::*;
-        vec![
+        let mut tools = vec![
             ToolSpec::new("gcc", Compiler),
             ToolSpec::new("g++", Compiler),
             ToolSpec::new("clang", Compiler),
             ToolSpec::new("clang++", Compiler),
-            ToolSpec {
-                name: "cl",
-                role: Compiler,
-                arguments: &[],
-            },
             ToolSpec::new("cmake", BuildTool),
             ToolSpec::new("make", BuildTool),
             ToolSpec::new("ninja", BuildTool),
@@ -27,7 +22,15 @@ impl ToolchainProvider for Cpp {
             ToolSpec::new("lldb", Debugger),
             ToolSpec::new("clang-format", Formatter),
             ToolSpec::new("clangd", LanguageServer),
-        ]
+        ];
+        if cfg!(windows) {
+            tools.push(ToolSpec {
+                name: "cl",
+                role: Compiler,
+                arguments: &[],
+            });
+        }
+        tools
     }
     fn extra_directories(&self, host: &Host) -> Vec<PathBuf> {
         let mut paths = vec![

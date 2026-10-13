@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 5] = [
+const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 9] = [
     ("full", VisualEffects::Full, [1440.0, 900.0], true, true),
     (
         "reduced",
@@ -21,6 +21,34 @@ const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 5] = [
     ("compact", VisualEffects::Full, [960.0, 640.0], true, true),
     (
         "editor-only",
+        VisualEffects::Full,
+        [1440.0, 900.0],
+        false,
+        false,
+    ),
+    (
+        "explorer",
+        VisualEffects::Full,
+        [1440.0, 900.0],
+        false,
+        false,
+    ),
+    (
+        "toolchains",
+        VisualEffects::Full,
+        [1440.0, 900.0],
+        false,
+        false,
+    ),
+    (
+        "installation-review",
+        VisualEffects::Full,
+        [1440.0, 900.0],
+        false,
+        false,
+    ),
+    (
+        "onboarding",
         VisualEffects::Full,
         [1440.0, 900.0],
         false,
@@ -103,6 +131,19 @@ impl eframe::App for Capture {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(
                 CASES[self.index].0 != "compact",
             ));
+            if CASES[self.index].0 == "explorer" {
+                self.shell
+                    .open_workspace(std::env::current_dir().unwrap_or_default());
+            }
+            if CASES[self.index].0 == "toolchains" {
+                self.shell.open_toolchain_manager();
+            }
+            if CASES[self.index].0 == "installation-review" {
+                self.shell.review_missing_tool();
+            }
+            if CASES[self.index].0 == "onboarding" {
+                self.shell.preview_onboarding();
+            }
             self.requested = false;
             self.since_change = Instant::now();
         }
@@ -111,7 +152,10 @@ impl eframe::App for Capture {
         self.shell.show_inspector = inspector;
         self.shell.show_bottom_panel = panel;
         self.shell.show(ctx);
-        if !self.requested && self.since_change.elapsed() >= Duration::from_millis(800) {
+        if !self.requested
+            && !self.shell.environment_scan_pending()
+            && self.since_change.elapsed() >= Duration::from_millis(800)
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             self.requested = true;
         }

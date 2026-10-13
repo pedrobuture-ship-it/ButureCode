@@ -17,3 +17,7 @@ Versões selecionadas: egui e eframe **0.33.3**, fixadas na mesma versão, compa
 ## Explorer (prompt 09)
 
 Biblioteca padrão: actor em thread, canais e watcher por polling de dois segundos apenas nas pastas expandidas. Evita dependência de watcher nativo neste ciclo e funciona nos três hosts; não detecta instantaneamente mudanças. Diretórios não expandidos não são lidos. A lista visível é virtualizada. Preview limitado a 1 MiB de UTF-8; não é editor. Cópias de diretórios são feitas no worker e podem deixar cópia parcial se ocorrer erro de IO. Links simbólicos não são percorridos nem modificados.
+
+## Prompts 10–20
+
+Sem dependências externas adicionais. Biblioteca padrão fornece INI validado por schema fechado, camadas de configuração, canais/threads, detecção de diretórios e sondagens de subprocessos. Escolha deliberada para não adicionar um runtime async ou serialização genérica para oito preferências tipadas. Ferramentas e gerenciadores de pacotes detectados são executáveis externos, não dependências linkadas nem redistribuídas; seus termos são próprios. Sondagens limitadas e workers evitam bloqueio do loop de apresentação. Expansão de schema/formatos e watcher nativo exigirá nova avaliação de dependências.

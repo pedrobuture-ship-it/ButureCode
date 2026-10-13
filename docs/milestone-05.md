@@ -29,4 +29,4 @@ cargo run -p buture-app --example capture_shell -- /tmp/buture-shell-preview
 - Aparência não persistida; seleção de efeitos vive somente nesta sessão.
 - Ainda não há medição de performance nem auditoria completa de licenças para distribuição binária.
 
-Aguardar ordens do proprietário antes do prompt 06.
+Este registro descreve o estado histórico do prompt 05. O proprietário posteriormente autorizou o avanço até o prompt 20; consulte [marco 20](milestone-20.md).

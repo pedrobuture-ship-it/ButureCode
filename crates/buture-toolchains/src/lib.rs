@@ -105,6 +105,7 @@ impl Host {
     }
 }
 pub mod engine;
+pub mod install;
 pub mod providers;
 #[cfg(test)]
 mod tests {

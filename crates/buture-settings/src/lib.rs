@@ -230,9 +230,11 @@ impl Preferences {
         std::thread::spawn(move || {
             let path = user_path();
             let mut settings = Settings::default();
+            let mut loaded = false;
             match path.as_ref().map(|p| Layer::load(p)).transpose() {
                 Ok(layer) => {
                     settings.user = layer.unwrap_or_default();
+                    loaded = true;
                     let _ = tx.send(Ok(settings.clone()));
                 }
                 Err(e) => {
@@ -246,6 +248,12 @@ impl Preferences {
                             settings.workspace = Layer::load(&root.join(".buture/settings.ini"))?
                         }
                         Request::SetUser { key, value } => {
+                            if !loaded {
+                                return Err(SettingsError::Io(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "Existing user settings could not be read; refusing to overwrite them",
+                                )));
+                            }
                             let mut layer = settings.user.clone();
                             layer.set(&key, &value)?;
                             layer.save(path.as_ref().ok_or_else(|| {
@@ -282,5 +290,23 @@ mod tests {
         assert!(Layer::parse("[AI]\napiKey=secret").is_err());
         assert!(Layer::parse("[Privacy]\ntelemetry=true").is_err());
         assert!(Layer::parse("[Appearance]\neffects=Full\neffects=Off").is_err());
+    }
+    #[test]
+    fn preferences_roundtrip_and_replace() {
+        let root = std::env::temp_dir().join(format!("buture-settings-{}", std::process::id()));
+        let path = root.join("settings.ini");
+        let mut layer = Layer::parse("[Appearance]\neffects=Reduced").expect("parse");
+        layer.save(&path).expect("save");
+        layer.set("Appearance.effects", "Off").expect("set");
+        layer.save(&path).expect("replace");
+        assert_eq!(
+            Settings {
+                user: Layer::load(&path).expect("load"),
+                workspace: Default::default()
+            }
+            .effects(),
+            VisualEffects::Off
+        );
+        fs::remove_dir_all(root).expect("cleanup");
     }
 }

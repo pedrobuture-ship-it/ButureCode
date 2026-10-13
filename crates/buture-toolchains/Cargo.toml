@@ -6,7 +6,7 @@ rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "Future host and development toolchain detection."
+description = "Host detection, bounded toolchain probes and assisted setup."
 
 [lints]
 workspace = true

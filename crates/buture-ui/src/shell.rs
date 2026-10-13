@@ -1,4 +1,4 @@
-//! Main IDE layout only. Editor, explorer and tool integrations belong to later prompts.
+//! Native IDE shell, workspace navigation and development environment workflows.
 use crate::{Backdrop, GlassSurface, GlassVariant, Theme};
 use buture_settings::VisualEffects;
 use egui::{
@@ -83,21 +83,36 @@ pub struct IdeShell {
     explorer: crate::explorer::ExplorerView,
     workspace: buture_workspace::Workspace,
     root: Option<std::path::PathBuf>,
+    branch: Option<String>,
     folder_input: String,
     open_folder: bool,
     file_menu: Option<std::path::PathBuf>,
     file_name: String,
-    preview: Option<(std::path::PathBuf, String)>,
+    preview: Option<(std::path::PathBuf, String, Vec<usize>)>,
     message: String,
     preferences: Option<buture_settings::Preferences>,
+    preferences_loaded: bool,
     settings: buture_settings::Settings,
     onboarding: crate::onboarding::Onboarding,
     host: Option<buture_toolchains::Host>,
-    host_receiver: Option<std::sync::mpsc::Receiver<buture_toolchains::Host>>,
+    host_receiver: Option<
+        std::sync::mpsc::Receiver<(
+            buture_toolchains::Host,
+            buture_toolchains::install::SetupHost,
+        )>,
+    >,
     scan_summary: Option<String>,
+    pending_scan: bool,
+    scan_languages: Vec<String>,
+    preview_first_run: bool,
     scan: Option<buture_toolchains::engine::Scan>,
     reports: Vec<buture_toolchains::engine::Toolchain>,
     show_toolchains: bool,
+    setup: Option<buture_toolchains::install::SetupHost>,
+    install_plan: Option<buture_toolchains::install::Plan>,
+    install_confirmed: bool,
+    installation: Option<buture_toolchains::install::Installation>,
+    install_log: std::collections::VecDeque<String>,
 }
 
 impl IdeShell {
@@ -111,6 +126,7 @@ impl IdeShell {
             explorer: Default::default(),
             workspace: Default::default(),
             root: None,
+            branch: None,
             folder_input: String::new(),
             open_folder: false,
             file_menu: None,
@@ -118,14 +134,23 @@ impl IdeShell {
             preview: None,
             message: String::new(),
             preferences: None,
+            preferences_loaded: false,
             settings: Default::default(),
             onboarding: Default::default(),
             host: None,
             host_receiver: None,
             scan_summary: None,
+            pending_scan: false,
+            scan_languages: Vec::new(),
+            preview_first_run: false,
             scan: None,
             reports: Vec::new(),
             show_toolchains: false,
+            setup: None,
+            install_plan: None,
+            install_confirmed: false,
+            installation: None,
+            install_log: Default::default(),
             theme,
             effects: VisualEffects::Full,
             show_inspector: true,
@@ -135,11 +160,48 @@ impl IdeShell {
 
     pub fn start_preferences(&mut self) {
         self.preferences = Some(buture_settings::Preferences::start());
+        self.initialize_environment();
+    }
+    fn initialize_environment(&mut self) {
         let (tx, rx) = std::sync::mpsc::channel();
         self.host_receiver = Some(rx);
         std::thread::spawn(move || {
-            let _ = tx.send(buture_toolchains::Host::detect());
+            let host = buture_toolchains::Host::detect();
+            let setup = buture_toolchains::install::SetupHost::detect(&host);
+            let _ = tx.send((host, setup));
         });
+    }
+    pub fn open_workspace(&self, path: std::path::PathBuf) {
+        self.workspace.send(buture_workspace::Request::Open(path));
+    }
+    pub fn open_toolchain_manager(&mut self) {
+        self.active = 7;
+        self.show_toolchains = true;
+        self.pending_scan = true;
+        if self.host.is_none() && self.host_receiver.is_none() {
+            self.initialize_environment();
+        }
+    }
+    /// Open review for an observed missing tool without confirming execution.
+    pub fn review_missing_tool(&mut self) -> bool {
+        self.install_plan = self.setup.as_ref().and_then(|h| {
+            self.reports
+                .iter()
+                .flat_map(|r| r.tools.iter())
+                .filter(|t| t.state == buture_toolchains::engine::ProbeState::Missing)
+                .find_map(|t| buture_toolchains::install::Plan::for_tool(&t.name, h))
+        });
+        self.install_confirmed = false;
+        self.install_plan.is_some()
+    }
+    pub fn environment_scan_pending(&self) -> bool {
+        self.pending_scan || self.scan.is_some()
+    }
+    /// Preview first run without reading or writing personal preferences.
+    pub fn preview_onboarding(&mut self) {
+        self.install_plan = None;
+        self.preview_first_run = true;
+        self.initialize_environment();
     }
     fn save_preference(&self, key: &str, value: &str) {
         if let Some(p) = &self.preferences {
@@ -153,6 +215,7 @@ impl IdeShell {
         if self.scan.is_none()
             && let Some(host) = &self.host
         {
+            self.scan_languages = languages.clone();
             self.reports.clear();
             self.scan_summary = None;
             self.onboarding.scanned = false;
@@ -184,24 +247,37 @@ impl IdeShell {
             while let Ok(result) = p.events.try_recv() {
                 match result {
                     Ok(settings) => {
+                        self.preferences_loaded = true;
                         self.effects = settings.effects();
                         self.show_inspector = settings.get("Appearance.inspector") == Some("true");
                         self.show_bottom_panel = settings.get("Appearance.panel") == Some("true");
                         self.settings = settings;
                     }
-                    Err(e) => self.message = e.to_string(),
+                    Err(e) => {
+                        self.preferences_loaded = true;
+                        self.message = e.to_string();
+                    }
                 }
             }
         }
 
         if let Some(rx) = &self.host_receiver
-            && let Ok(host) = rx.try_recv()
+            && let Ok((host, setup)) = rx.try_recv()
         {
             self.host = Some(host);
+            self.setup = Some(setup);
+        }
+        if self.pending_scan && self.host.is_some() {
+            self.pending_scan = false;
+            self.start_scan(Vec::new());
         }
         while let Ok(event) = self.workspace.events.try_recv() {
             match event {
-                buture_workspace::Event::Tree { root, entries } => {
+                buture_workspace::Event::Tree {
+                    root,
+                    entries,
+                    branch,
+                } => {
                     if self.root.as_ref() != Some(&root)
                         && let Some(p) = &self.preferences
                     {
@@ -209,6 +285,11 @@ impl IdeShell {
                             .requests
                             .send(buture_settings::Request::LoadWorkspace(root.clone()));
                     }
+                    if self.root.as_ref() != Some(&root) {
+                        self.preview = None;
+                        self.explorer.selected = None;
+                    }
+                    self.branch = branch;
                     self.root = Some(root);
                     self.explorer.rows = entries
                         .into_iter()
@@ -220,9 +301,11 @@ impl IdeShell {
                         })
                         .collect();
                 }
-                buture_workspace::Event::Preview { path, text } => {
-                    self.preview = Some((path, text))
-                }
+                buture_workspace::Event::Preview {
+                    path,
+                    text,
+                    line_offsets,
+                } => self.preview = Some((path, text, line_offsets)),
                 buture_workspace::Event::Error(error) => self.message = error,
             }
         }
@@ -231,33 +314,50 @@ impl IdeShell {
             self.open_folder = true;
         }
         self.workspace_dialogs(ctx);
-        if self.preferences.is_some()
-            && self.settings.get("Development.onboardingComplete") != Some("true")
+        self.install_dialogs(ctx);
+        if self.preview_first_run
+            || (self.preferences.is_some()
+                && self.preferences_loaded
+                && self.settings.get("Development.onboardingComplete") != Some("true"))
         {
-            egui::Window::new("First run")
+            let languages_match = self.scan_languages == self.onboarding.languages;
+            let action = egui::Window::new("First run")
+                .title_bar(false)
                 .collapsible(false)
                 .resizable(false)
-                .default_width(460.0)
+                .frame(egui::Frame::NONE)
                 .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
-                    if let Some(action) =
-                        self.onboarding
-                            .show(ui, self.host.as_ref(), self.scan_summary.as_deref())
-                    {
-                        match action {
-                            crate::onboarding::Action::Scan => {
-                                self.start_scan(self.onboarding.languages.clone());
-                            }
-                            crate::onboarding::Action::Complete => {
-                                self.save_preference(
-                                    "Languages.selected",
-                                    &self.onboarding.languages.join(","),
-                                );
-                                self.save_preference("Development.onboardingComplete", "true");
-                            }
-                        }
+                    GlassSurface::new(GlassVariant::Modal)
+                        .show(ui, &self.theme, self.effects, &mut self.backdrop, |ui| {
+                            ui.set_min_width(450.0);
+                            ui.set_min_height(220.0);
+                            self.onboarding.show(
+                                ui,
+                                self.host.as_ref(),
+                                self.scan_summary.as_deref().filter(|_| languages_match),
+                                self.scan.is_some(),
+                            )
+                        })
+                        .inner
+                })
+                .and_then(|r| r.inner)
+                .flatten();
+            if let Some(action) = action {
+                match action {
+                    crate::onboarding::Action::Scan => {
+                        self.start_scan(self.onboarding.languages.clone())
                     }
-                });
+                    crate::onboarding::Action::Complete => {
+                        self.preview_first_run = false;
+                        self.save_preference(
+                            "Languages.selected",
+                            &self.onboarding.languages.join(","),
+                        );
+                        self.save_preference("Development.onboardingComplete", "true");
+                    }
+                }
+            }
         }
         let theme = self.theme;
         let mut layout = ShellLayout::calculate(
@@ -419,19 +519,45 @@ impl IdeShell {
                 }
                 let mut center = region(ui, "editor", layout.editor.shrink(theme.spacing.md));
                 if self.active == 7 && self.show_toolchains {
-                    if crate::toolchains::show(&mut center, &self.reports, self.scan.is_some()) {
-                        self.start_scan(Vec::new());
+                    if let Some(action) = crate::toolchains::show(
+                        &mut center,
+                        &self.reports,
+                        self.scan.is_some() || self.installation.is_some(),
+                        self.setup.as_ref(),
+                    ) {
+                        match action {
+                            crate::toolchains::Action::Scan => self.start_scan(Vec::new()),
+                            crate::toolchains::Action::Install(tool) => {
+                                self.install_plan = self.setup.as_ref().and_then(|h| {
+                                    buture_toolchains::install::Plan::for_tool(&tool, h)
+                                });
+                                self.install_confirmed = false;
+                            }
+                        }
                     }
-                } else if let Some((path, text)) = &self.preview {
+                } else if let Some((path, text, offsets)) = &self.preview {
                     center.label(path.display().to_string());
                     center.label("Read-only preview · editing belongs to prompt 25");
                     center.separator();
-                    egui::ScrollArea::both().show(&mut center, |ui| {
-                        ui.add(
-                            egui::Label::new(RichText::new(text).monospace())
-                                .wrap_mode(egui::TextWrapMode::Extend),
-                        );
-                    });
+                    egui::ScrollArea::both().show_rows(
+                        &mut center,
+                        20.0,
+                        offsets.len(),
+                        |ui, range| {
+                            for index in range {
+                                let start = offsets[index];
+                                let end = offsets.get(index + 1).copied().unwrap_or(text.len());
+                                let line = text
+                                    .get(start..end)
+                                    .unwrap_or("")
+                                    .trim_end_matches(['\r', '\n']);
+                                ui.add(
+                                    egui::Label::new(RichText::new(line).monospace())
+                                        .wrap_mode(egui::TextWrapMode::Extend),
+                                );
+                            }
+                        },
+                    );
                 } else {
                     editor(&mut center, &theme);
                 }
@@ -442,10 +568,9 @@ impl IdeShell {
                     output_panel(
                         &mut region(ui, "output", rect.shrink(theme.spacing.lg)),
                         &theme,
+                        self.root.as_deref(),
+                        &self.message,
                     );
-                }
-                if !self.message.is_empty() {
-                    ui.label(&self.message);
                 }
                 status_bar(
                     &mut region(
@@ -456,8 +581,83 @@ impl IdeShell {
                             .shrink2(vec2(theme.spacing.lg, theme.spacing.xs)),
                     ),
                     &theme,
+                    self.root.as_deref(),
+                    &self.message,
                 );
             });
+    }
+
+    fn install_dialogs(&mut self, ctx: &Context) {
+        let mut finished = None;
+        if let Some(installation) = &self.installation {
+            while let Ok(event) = installation.events.try_recv() {
+                match event {
+                    buture_toolchains::install::InstallEvent::Output(text) => {
+                        self.install_log.push_back(text);
+                        while self.install_log.len() > 128 {
+                            self.install_log.pop_front();
+                        }
+                    }
+                    buture_toolchains::install::InstallEvent::Finished(result) => {
+                        finished = Some(result)
+                    }
+                }
+            }
+        }
+        if let Some(result) = finished {
+            self.installation = None;
+            self.message = match result {
+                Ok(buture_toolchains::engine::ProbeState::Ready(version)) => {
+                    format!("Installation verified: {version}")
+                }
+                Ok(state) => format!("Package manager completed; verification: {state:?}"),
+                Err(error) => error,
+            };
+            self.install_log.push_back(self.message.clone());
+            self.start_scan(Vec::new());
+        }
+        if let Some(plan) = self.install_plan.clone() {
+            egui::Window::new("Review installation")
+                .collapsible(false)
+                .default_width(540.0)
+                .show(ctx, |ui| {
+                    ui.heading(format!("Missing tool: {}", plan.tool()));
+                    ui.label(&plan.method);
+                    ui.label(&plan.explanation);
+                    ui.separator();
+                    ui.label("Exact command");
+                    ui.add(egui::Label::new(RichText::new(plan.command()).monospace()).wrap());
+                    if ui.button("Copy command").clicked() {
+                        ctx.copy_text(plan.command());
+                    }
+                    ui.checkbox(
+                        &mut self.install_confirmed,
+                        "I authorize this command and its package changes",
+                    );
+                    if ui
+                        .add_enabled(
+                            self.install_confirmed && self.installation.is_none(),
+                            Button::new("Execute approved installation"),
+                        )
+                        .clicked()
+                    {
+                        self.install_log.clear();
+                        self.installation = Some(plan.confirm().execute());
+                        self.install_plan = None;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.install_plan = None;
+                        self.install_confirmed = false;
+                    }
+                });
+        }
+        if self.installation.is_some() || !self.install_log.is_empty() {
+            egui::Window::new("Installation output").default_width(600.0).show(ctx,|ui| {
+                if self.installation.is_some(){ui.spinner();ui.label("Installation running. Closing this panel does not cancel package changes.");}
+                egui::ScrollArea::vertical().max_height(300.0).show(ui,|ui|{for line in &self.install_log {ui.label(RichText::new(line).monospace());}});
+                if self.installation.is_none() && ui.button("Close").clicked(){self.install_log.clear();}
+            });
+        }
     }
 
     fn workspace_dialogs(&mut self, ctx: &Context) {
@@ -556,9 +756,7 @@ impl IdeShell {
             let width = (ui.available_width() - 380.0).clamp(160.0, 440.0);
             ui.add_sized(
                 [width, 30.0],
-                Button::new(format!(
-                    "⌕  Search files, symbols, commands...   {shortcut}"
-                )),
+                Button::new(format!("Search files, symbols, commands...   {shortcut}")),
             )
             .on_hover_text("Command Center · available in a later milestone");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -590,11 +788,34 @@ impl IdeShell {
                 }
                 ui.separator();
                 ui.add_enabled(false, Button::new("Profile"));
-                ui.label("Git: not scanned");
-                ui.toggle_value(&mut self.show_inspector, "Inspector")
-                    .on_hover_text("Toggle right inspector");
-                ui.toggle_value(&mut self.show_bottom_panel, "Panel")
-                    .on_hover_text("Toggle output panel");
+                ui.label(self.branch.as_deref().unwrap_or("No branch"));
+                if ui.button("Workspace").clicked() {
+                    self.open_folder = true;
+                }
+                if ui
+                    .toggle_value(&mut self.show_inspector, "Inspector")
+                    .on_hover_text("Toggle right inspector")
+                    .changed()
+                {
+                    self.save_preference(
+                        "Appearance.inspector",
+                        if self.show_inspector { "true" } else { "false" },
+                    );
+                }
+                if ui
+                    .toggle_value(&mut self.show_bottom_panel, "Panel")
+                    .on_hover_text("Toggle output panel")
+                    .changed()
+                {
+                    self.save_preference(
+                        "Appearance.panel",
+                        if self.show_bottom_panel {
+                            "true"
+                        } else {
+                            "false"
+                        },
+                    );
+                }
                 let drag =
                     ui.allocate_response(vec2(ui.available_width().max(0.0), 32.0), Sense::drag());
                 if drag.drag_started() {
@@ -640,7 +861,12 @@ impl IdeShell {
         ui.add_space(theme.spacing.md);
         ui.horizontal(|ui| {
             for effects in VisualEffects::ALL {
-                ui.selectable_value(&mut self.effects, effects, effects.label());
+                if ui
+                    .selectable_value(&mut self.effects, effects, effects.label())
+                    .changed()
+                {
+                    self.save_preference("Appearance.effects", effects.label());
+                }
             }
         });
         ui.add_space(theme.spacing.sm);
@@ -937,7 +1163,7 @@ fn editor(ui: &mut Ui, theme: &Theme) {
             });
         });
 }
-fn output_panel(ui: &mut Ui, theme: &Theme) {
+fn output_panel(ui: &mut Ui, theme: &Theme, root: Option<&std::path::Path>, message: &str) {
     ui.horizontal(|ui| {
         ui.label(RichText::new("Output").color(theme.accent.emerald));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -961,13 +1187,19 @@ fn output_panel(ui: &mut Ui, theme: &Theme) {
                     .color(theme.text.muted),
             );
             ui.label(
-                RichText::new("No workspace open.")
-                    .monospace()
-                    .color(theme.text.muted),
+                RichText::new(
+                    root.map(|p| format!("Workspace: {}", p.display()))
+                        .unwrap_or_else(|| "No workspace open.".into()),
+                )
+                .monospace()
+                .color(theme.text.muted),
             );
+            if !message.is_empty() {
+                ui.label(RichText::new(message).color(theme.text.secondary));
+            }
         });
 }
-fn status_bar(ui: &mut Ui, theme: &Theme) {
+fn status_bar(ui: &mut Ui, theme: &Theme, root: Option<&std::path::Path>, message: &str) {
     ui.horizontal_centered(|ui| {
         let (dot, _) = ui.allocate_exact_size(vec2(8.0, 12.0), Sense::hover());
         ui.painter()
@@ -978,7 +1210,15 @@ fn status_bar(ui: &mut Ui, theme: &Theme) {
                 .color(theme.text.secondary),
         );
         ui.add_space(theme.spacing.lg);
-        caption(ui, "No workspace", theme);
+        let workspace = root
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "No workspace".into());
+        caption(ui, &workspace, theme);
+        if !message.is_empty() {
+            ui.label(RichText::new("Output message").color(theme.text.secondary))
+                .on_hover_text(message);
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             caption(ui, "Buture Code  /  0.1.0", theme);
         });

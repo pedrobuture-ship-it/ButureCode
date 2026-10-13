@@ -27,12 +27,22 @@ pub fn summary(reports: &[Toolchain]) -> String {
     }
     text
 }
-pub fn show(ui: &mut Ui, reports: &[Toolchain], scanning: bool) -> bool {
+pub enum Action {
+    Scan,
+    Install(String),
+}
+pub fn show(
+    ui: &mut Ui,
+    reports: &[Toolchain],
+    scanning: bool,
+    setup: Option<&buture_toolchains::install::SetupHost>,
+) -> Option<Action> {
     ui.heading("Development / Toolchains");
     ui.label("Versions and locations discovered on this host.");
     let scan = ui
         .add_enabled(!scanning, egui::Button::new("Scan tools"))
         .clicked();
+    let mut action = scan.then_some(Action::Scan);
     if scanning {
         ui.horizontal(|ui| {
             ui.spinner();
@@ -56,6 +66,15 @@ pub fn show(ui: &mut Ui, reports: &[Toolchain], scanning: bool) -> bool {
                         ProbeState::Failed(_) => "Detected · version unavailable".into(),
                     };
                     ui.push_id((&report.language, index), |ui| {
+                        if tool.state == ProbeState::Missing
+                            && !scanning
+                            && setup.is_some_and(|h| {
+                                buture_toolchains::install::Plan::for_tool(&tool.name, h).is_some()
+                            })
+                            && ui.button(format!("Install {}…", tool.name)).clicked()
+                        {
+                            action = Some(Action::Install(tool.name.clone()));
+                        }
                         ui.collapsing(format!("{}  ·  {state}", tool.name), |ui| {
                             ui.label(format!("Role: {:?}", tool.role));
                             if let Some(path) = &tool.executable {
@@ -76,5 +95,5 @@ pub fn show(ui: &mut Ui, reports: &[Toolchain], scanning: bool) -> bool {
                 }
             }
         });
-    scan
+    action
 }

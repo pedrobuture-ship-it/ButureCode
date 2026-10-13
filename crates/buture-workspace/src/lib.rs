@@ -36,8 +36,16 @@ pub enum Request {
 }
 #[derive(Debug)]
 pub enum Event {
-    Tree { root: PathBuf, entries: Vec<Entry> },
-    Preview { path: PathBuf, text: String },
+    Tree {
+        root: PathBuf,
+        entries: Vec<Entry>,
+        branch: Option<String>,
+    },
+    Preview {
+        path: PathBuf,
+        text: String,
+        line_offsets: Vec<usize>,
+    },
     Error(String),
 }
 #[derive(Debug)]
@@ -78,6 +86,7 @@ impl Default for Workspace {
             let mut root = None;
             let mut expanded = BTreeSet::new();
             let mut previous = Vec::new();
+            let mut previous_branch = None;
             loop {
                 match rx.recv_timeout(Duration::from_secs(2)) {
                     Ok(request) => {
@@ -119,7 +128,18 @@ impl Default for Workspace {
                                     }
                                     let text = String::from_utf8(data)
                                         .map_err(|_| WorkspaceError::TooLarge)?;
-                                    let _ = events_tx.send(Event::Preview { path, text });
+                                    let line_offsets = std::iter::once(0)
+                                        .chain(
+                                            text.bytes()
+                                                .enumerate()
+                                                .filter_map(|(i, b)| (b == b'\n').then_some(i + 1)),
+                                        )
+                                        .collect();
+                                    let _ = events_tx.send(Event::Preview {
+                                        path,
+                                        text,
+                                        line_offsets,
+                                    });
                                 }
                                 Request::Mutate(path, op) => {
                                     mutate(
@@ -160,12 +180,14 @@ impl Default for Workspace {
                 }
                 if let Some(root) = &root {
                     match tree(root, &expanded) {
-                        Ok(entries) if entries != previous => {
+                        Ok(entries) if entries != previous || branch(root) != previous_branch => {
                             previous = entries.clone();
+                            previous_branch = branch(root);
                             if events_tx
                                 .send(Event::Tree {
                                     root: root.clone(),
                                     entries,
+                                    branch: previous_branch.clone(),
                                 })
                                 .is_err()
                             {
@@ -189,6 +211,27 @@ impl Default for Workspace {
 impl Workspace {
     pub fn send(&self, request: Request) {
         let _ = self.requests.send(request);
+    }
+}
+
+fn branch(root: &Path) -> Option<String> {
+    use std::io::Read;
+    let file = fs::File::open(root.join(".git/HEAD")).ok()?;
+    let mut text = String::new();
+    file.take(4096).read_to_string(&mut text).ok()?;
+    let value = text.trim();
+    if let Some(branch) = value.strip_prefix("ref: refs/heads/") {
+        Some(
+            branch
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(100)
+                .collect(),
+        )
+    } else if value.len() >= 7 && value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Some(format!("Detached {}", &value[..7]))
+    } else {
+        None
     }
 }
 
@@ -354,6 +397,51 @@ mod tests {
         )
         .expect("copy");
         assert!(mutate(&root, &root, Operation::Delete).is_err());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+    #[test]
+    fn watcher_and_preview_are_live() {
+        let root = std::env::temp_dir().join(format!("buture-watch-{}", std::process::id()));
+        fs::create_dir_all(&root).expect("fixture");
+        let root = fs::canonicalize(root).expect("root");
+        let workspace = Workspace::default();
+        workspace.send(Request::Open(root.clone()));
+        assert!(matches!(
+            workspace.events.recv_timeout(Duration::from_secs(4)),
+            Ok(Event::Tree { .. })
+        ));
+        fs::write(root.join("live.txt"), "hello").expect("external write");
+        match workspace
+            .events
+            .recv_timeout(Duration::from_secs(4))
+            .expect("watch event")
+        {
+            Event::Tree { entries, .. } => {
+                assert!(entries.iter().any(|e| e.path.ends_with("live.txt")))
+            }
+            event => panic!("Unexpected event: {event:?}"),
+        }
+        workspace.send(Request::Read(root.join("live.txt")));
+        match workspace
+            .events
+            .recv_timeout(Duration::from_secs(4))
+            .expect("preview")
+        {
+            Event::Preview { text, .. } => assert_eq!(text, "hello"),
+            event => panic!("Unexpected event: {event:?}"),
+        }
+        drop(workspace);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+    #[cfg(unix)]
+    #[test]
+    fn symlink_operations_are_rejected() {
+        let root = std::env::temp_dir().join(format!("buture-symlink-{}", std::process::id()));
+        fs::create_dir_all(&root).expect("fixture");
+        let root = fs::canonicalize(root).expect("root");
+        std::os::unix::fs::symlink(std::env::temp_dir(), root.join("escape")).expect("symlink");
+        assert!(checked(&root, &root.join("escape")).is_err());
+        assert!(mutate(&root, &root.join("escape"), Operation::Delete).is_err());
         fs::remove_dir_all(root).expect("cleanup");
     }
 }

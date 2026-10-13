@@ -13,6 +13,7 @@ pub struct TreeRow {
 pub struct ExplorerView {
     pub rows: Vec<TreeRow>,
     pub selected: Option<PathBuf>,
+    focused: Option<egui::Id>,
 }
 #[derive(Debug)]
 pub enum TreeAction {
@@ -27,7 +28,10 @@ impl ExplorerView {
             .rows
             .iter()
             .position(|r| Some(&r.path) == self.selected.as_ref());
-        if ui.rect_contains_pointer(ui.max_rect()) || ui.memory(|m| m.has_focus(ui.id())) {
+        if self
+            .focused
+            .is_some_and(|id| ui.memory(|m| m.has_focus(id)))
+        {
             let delta = ui.input(|i| {
                 if i.key_pressed(Key::ArrowDown) {
                     1
@@ -46,7 +50,7 @@ impl ExplorerView {
                 let row = &self.rows[index];
                 if ui.input(|i| {
                     i.key_pressed(Key::Enter)
-                        || i.key_pressed(Key::ArrowRight)
+                        || (row.directory && !row.expanded && i.key_pressed(Key::ArrowRight))
                         || (row.expanded && i.key_pressed(Key::ArrowLeft))
                 }) {
                     action = Some(if row.directory {
@@ -65,7 +69,7 @@ impl ExplorerView {
                     ui.horizontal(|ui| {
                         ui.add_space(row.depth as f32 * 12.0);
                         let prefix = if row.directory {
-                            if row.expanded { "▾" } else { "▸" }
+                            if row.expanded { "-" } else { "+" }
                         } else {
                             "·"
                         };
@@ -79,9 +83,17 @@ impl ExplorerView {
                             format!("{prefix} {name}"),
                         );
                         if response.clicked() {
+                            response.request_focus();
+                            self.focused = Some(response.id);
                             self.selected = Some(row.path.clone());
                         }
-                        if response.double_clicked() {
+                        if response.has_focus() {
+                            self.focused = Some(response.id);
+                        }
+                        if response.secondary_clicked() {
+                            self.selected = Some(row.path.clone());
+                        }
+                        if response.double_clicked() || (row.directory && response.clicked()) {
                             action = Some(if row.directory {
                                 TreeAction::Toggle(row.path.clone())
                             } else {

@@ -17,6 +17,7 @@ impl Onboarding {
         ui: &mut Ui,
         host: Option<&Host>,
         summary: Option<&str>,
+        scanning: bool,
     ) -> Option<Action> {
         ui.label(RichText::new(format!("{} / 5", self.step + 1)).small());
         ui.add_space(16.0);
@@ -85,12 +86,16 @@ impl Onboarding {
             3 => {
                 ui.heading("Scan Environment");
                 ui.label("Read-only discovery. No tools will be installed.");
-                if ui.button("Scan").clicked() {
+                if ui
+                    .add_enabled(!scanning, egui::Button::new("Scan"))
+                    .clicked()
+                {
                     return Some(Action::Scan);
                 }
-                if summary.is_some() {
-                    self.scanned = true;
+                if scanning {
+                    ui.spinner();
                 }
+                self.scanned = summary.is_some() && !scanning;
             }
             _ => {
                 ui.heading("Environment Summary");

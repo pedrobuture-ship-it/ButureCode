@@ -1,28 +1,25 @@
 # Arquitetura
 
-Cargo workspace Rust stable, edition 2024, MSRV declarado 1.88. O lockfile fixa a resolução de dependências.
+Cargo workspace Rust stable, edition 2024, MSRV declarado 1.88. O lockfile fixa dependências. APIs dos domínios independem de egui.
 
 ```text
-buture-app
-├── buture-core (identidade)
-├── eframe (janela e backend nativo)
-└── buture-ui
-    ├── egui (apresentação)
-    └── buture-settings (política de efeitos)
+buture-app → eframe, buture-core, buture-ui
+buture-ui → egui, buture-settings, buture-workspace, buture-toolchains
+buture-settings / buture-workspace / buture-toolchains → biblioteca padrão
 ```
 
-`buture-app` é a fronteira de aplicação: inicializa eframe, a janela e o loop nativo. `buture-core` concentra identidade sem dependências. `buture-settings` define VisualEffects, independente do toolkit; persistência e settings em camadas ficam para o prompt 10. `buture-ui` fornece tokens, Backdrop, GlassSurface e IdeShell.
+`buture-app` inicializa a janela e os workers de preferências/host. `buture-core` concentra a identidade. `buture-ui` fornece tokens, Backdrop, GlassSurface, layout, Explorer, onboarding e apresentação de Toolchains.
+
+`buture-workspace` é um actor de filesystem: recebe ações e envia árvores/preview/erros. Apenas diretórios expandidos são listados; watcher por polling a cada dois segundos. A UI virtualiza linhas. Preview limitado a 1 MiB, sem edição. As ações validam confinamento ao workspace e rejeitam links simbólicos. IO ocorre no worker; não há comandos de projeto.
+
+`buture-settings` valida chaves e valores, resolve Default → User → Workspace e persiste INI. Caminho do usuário: XDG_CONFIG_HOME ou ~/.config no Linux, Application Support no macOS, APPDATA no Windows. Workspace: `.buture/settings.ini`. Preferências privadas e conclusão do onboarding só vêm de User. Settings não aceita secrets, comandos ou providers arbitrários. Categorias futuras estão reservadas e não fingem funcionalidades prontas. Arquivo pessoal inválido não é sobrescrito por defaults.
+
+`buture-toolchains` detecta o host e implementa providers, sondagens de versão com limites e planos de instalação assistida. Providers rodam em workers e transmitem resultados; UI não inicia subprocessos diretamente. A execução de instalação exige um plano confirmado e o resultado é verificado. [Detalhes e limitações](toolchains.md).
 
 ## Renderização
 
-Backend OpenGL/Glow, X11 ou Wayland no Linux. eframe documenta suporte nativo a Windows e macOS; esses sistemas ainda não foram executados ou compilados neste ambiente. A integração gráfica está contida na camada de apresentação.
+OpenGL/Glow, X11 ou Wayland no Linux. Windows/macOS suportados pelo toolkit, sem validação nativa neste ambiente. ShellLayout usa pontos lógicos; inspector cede espaço em janelas estreitas. Editor/preview é sólido. Tokens centralizam as cores; GlassSurface centraliza composição, blur e fallback, inclusive o onboarding.
 
-ShellLayout calcula regiões em pontos lógicos. O inspector é opcional e cede espaço quando a janela tem menos de 1150 pontos de largura. Top bar oferece drag, maximização, minimização, fechamento e alternância dos painéis. O editor usa preenchimento sólido explícito. O conteúdo atual é uma prévia somente leitura, não um buffer editável.
+Backdrop interno e cache compartilhado; sem captura de wallpaper do SO ou blur atrás de texto. Repaint por interação e polling periódico de canais (200 ms), necessário para refletir eventos de workers. Não há medição de performance ou promessa de consumo em idle neste marco.
 
-Backdrop gera uma textura interna usando tokens e pré-calcula os raios padrão de blur. GlassSurface reutiliza o cache por raio e controla fallback; não há shaders individuais, captura do desktop nem blur atrás do código. O backend repinta por interação; não há timer contínuo no aplicativo principal. O timer de captura pertence somente ao exemplo de QA.
-
-## Limites do marco
-
-Os demais crates reservam os domínios dos prompts posteriores. Não há implementações fictícias de terminal, editor, filesystem explorer, Git, LSP, Doctor ou IA. Nenhum diagnóstico de ferramentas é apresentado como concluído.
-
-APIs de domínio deverão permanecer independentes do toolkit. Adaptadores dependerão de tipos fundamentais, sem ciclos. UI não executará subprocessos, I/O lento ou parsing no loop de renderização. Anyhow, se necessário, fica nas fronteiras; erros de domínio deverão ser tipados.
+Crates dos prompts seguintes continuam reservados: não há PTY, buffer editável, LSP, Doctor, Git completo, IA ou integrações fictícias. Não há ciclos de crates nem dependências externas novas nos prompts 06–20. Erros de domínio tipados; `unsafe_code` proibido no código autoral.
