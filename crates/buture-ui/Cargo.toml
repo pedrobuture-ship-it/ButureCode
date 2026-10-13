@@ -20,3 +20,4 @@ buture-doctor = { path = "../buture-doctor" }
 buture-project = { path = "../buture-project" }
 buture-editor = { path = "../buture-editor" }
 buture-search = { path = "../buture-search" }
+buture-core = { path = "../buture-core" }

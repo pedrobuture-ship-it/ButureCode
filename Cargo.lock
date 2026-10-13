@@ -572,6 +572,7 @@ version = "0.1.0"
 name = "buture-ui"
 version = "0.1.0"
 dependencies = [
+ "buture-core",
  "buture-doctor",
  "buture-editor",
  "buture-project",

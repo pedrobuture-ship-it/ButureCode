@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 15] = [
+const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 16] = [
     ("full", VisualEffects::Full, [1440.0, 900.0], true, true),
     (
         "reduced",
@@ -37,6 +37,13 @@ const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 15] = [
     ("tabs", VisualEffects::Full, [1440.0, 900.0], false, false),
     ("split", VisualEffects::Full, [1440.0, 900.0], false, false),
     ("search", VisualEffects::Full, [1440.0, 900.0], false, false),
+    (
+        "palette",
+        VisualEffects::Full,
+        [1440.0, 900.0],
+        false,
+        false,
+    ),
     (
         "overview",
         VisualEffects::Full,
@@ -162,6 +169,9 @@ impl eframe::App for Capture {
             }
             if CASES[self.index].0 == "split" {
                 self.shell.split_editor(false);
+            }
+            if CASES[self.index].0 == "palette" {
+                self.shell.open_palette();
             }
             if self.editing_only && CASES[self.index].0 == "overview" {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);

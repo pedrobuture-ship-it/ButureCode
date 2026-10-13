@@ -695,6 +695,16 @@ impl EditorSpace {
             .err()
             .map(|e| e.to_string())
     }
+    pub fn close_active(&mut self) {
+        if let Some(index) = self.groups[self.group_active].active {
+            self.action(TabAction::Close(index));
+            self.persist();
+        }
+    }
+    pub fn restore_closed(&mut self) {
+        self.action(TabAction::Restore);
+        self.persist();
+    }
     pub fn active_snapshot(&self) -> Option<buture_editor::TextSnapshot> {
         let index = self.groups[self.group_active].active?;
         Some(self.documents[index].buffer.snapshot())

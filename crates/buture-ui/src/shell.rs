@@ -91,6 +91,11 @@ pub struct IdeShell {
     preview: Option<(std::path::PathBuf, String, Vec<usize>)>,
     editors: crate::editor::EditorSpace,
     search: crate::search::SearchPanel,
+    palette: crate::palette::Palette,
+    commands: buture_core::commands::CommandRegistry,
+    open_file_dialog: bool,
+    file_input: String,
+    pending_file: Option<std::path::PathBuf>,
     message: String,
     preferences: Option<buture_settings::Preferences>,
     preferences_loaded: bool,
@@ -145,6 +150,11 @@ impl IdeShell {
             preview: None,
             editors: Default::default(),
             search: Default::default(),
+            palette: Default::default(),
+            commands: buture_core::commands::CommandRegistry::standard(),
+            open_file_dialog: false,
+            file_input: String::new(),
+            pending_file: None,
             message: String::new(),
             preferences: None,
             preferences_loaded: false,
@@ -209,6 +219,130 @@ impl IdeShell {
         } else {
             buture_editor::session::Orientation::Horizontal
         });
+    }
+    pub fn open_palette(&mut self) {
+        self.palette.activate();
+    }
+    fn open_path(&mut self, mut path: std::path::PathBuf) {
+        if !path.is_absolute() {
+            if let Some(root) = &self.root {
+                path = root.join(path);
+            } else {
+                self.message = "Enter an absolute file path or open a folder first".into();
+                return;
+            }
+        }
+        if self.root.as_ref().is_some_and(|r| path.starts_with(r)) {
+            self.open_file(path);
+        } else if let Some(parent) = path.parent() {
+            self.pending_file = Some(path.clone());
+            self.open_workspace(parent.to_owned());
+        }
+    }
+    fn command_context(&self) -> crate::palette::Availability {
+        crate::palette::Availability {
+            workspace: self.root.is_some(),
+            editor: self.editors.active_snapshot().is_some(),
+            quick_open: false,
+        }
+    }
+    fn dispatch(&mut self, action: buture_core::commands::Action) {
+        use crate::editor::EditCommand;
+        use buture_core::commands::Action;
+        match action {
+            Action::OpenFile => self.open_file_dialog = true,
+            Action::OpenFolder => self.open_folder = true,
+            Action::Doctor => self.open_doctor(),
+            Action::Settings => {
+                self.active = 7;
+                self.show_doctor = false;
+                self.show_project = false;
+                self.show_toolchains = false;
+            }
+            Action::Effects => {
+                self.effects = match self.effects {
+                    VisualEffects::Full => VisualEffects::Reduced,
+                    VisualEffects::Reduced => VisualEffects::Off,
+                    VisualEffects::Off => VisualEffects::Full,
+                };
+                self.save_preference("Appearance.effects", self.effects.label());
+            }
+            Action::SearchDocument => self.open_search(false),
+            Action::SearchWorkspace => self.open_search(true),
+            Action::Palette => self.open_palette(),
+            Action::QuickOpen => self.message = "File navigation is not available yet".into(),
+            Action::TogglePanel => {
+                self.show_bottom_panel = !self.show_bottom_panel;
+                self.save_preference(
+                    "Appearance.panel",
+                    if self.show_bottom_panel {
+                        "true"
+                    } else {
+                        "false"
+                    },
+                );
+            }
+            Action::ToggleInspector => {
+                self.show_inspector = !self.show_inspector;
+                self.save_preference(
+                    "Appearance.inspector",
+                    if self.show_inspector { "true" } else { "false" },
+                );
+            }
+            Action::Save => self.editors.save_active(),
+            Action::CloseFile => self.editors.close_active(),
+            Action::RestoreTab => self.editors.restore_closed(),
+            Action::SplitRight => self.split_editor(false),
+            Action::SplitDown => self.split_editor(true),
+            Action::Editor(id) => {
+                let command = match id {
+                    "undo" => EditCommand::Undo,
+                    "redo" => EditCommand::Redo,
+                    "selectAll" => EditCommand::SelectAll,
+                    "duplicate" => EditCommand::Duplicate,
+                    "moveUp" => EditCommand::MoveUp,
+                    "moveDown" => EditCommand::MoveDown,
+                    "comment" => EditCommand::Comment,
+                    "indent" => EditCommand::Indent,
+                    "outdent" => EditCommand::Outdent,
+                    "occurrence" => EditCommand::Occurrence,
+                    "cursorUp" => EditCommand::CursorUp,
+                    "cursorDown" => EditCommand::CursorDown,
+                    "clearCursors" => EditCommand::ClearCursors,
+                    "fold" => EditCommand::Fold,
+                    _ => return,
+                };
+                if let Some(error) = self.editors.perform(command) {
+                    self.message = error;
+                }
+            }
+            Action::Unavailable(reason) => self.message = reason.into(),
+        }
+    }
+    fn command_palette(&mut self, ctx: &Context) {
+        if !self.palette.open {
+            return;
+        }
+        let availability = self.command_context();
+        let action = egui::Window::new("Command Palette")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .frame(egui::Frame::NONE)
+            .anchor(Align2::CENTER_TOP, [0.0, 90.0])
+            .show(ctx, |ui| {
+                GlassSurface::new(GlassVariant::Floating)
+                    .show(ui, &self.theme, self.effects, &mut self.backdrop, |ui| {
+                        self.palette
+                            .show(ui, &self.theme, &self.commands, availability)
+                    })
+                    .inner
+            })
+            .and_then(|r| r.inner)
+            .flatten();
+        if let Some(action) = action {
+            self.dispatch(action);
+        }
     }
     pub fn open_file(&mut self, path: std::path::PathBuf) {
         if let Some(root) = &self.root {
@@ -439,6 +573,9 @@ impl IdeShell {
                     }
                     self.branch = branch;
                     self.root = Some(root);
+                    if let Some(path) = self.pending_file.take() {
+                        self.open_file(path);
+                    }
                     self.explorer.rows = entries
                         .into_iter()
                         .map(|e| crate::explorer::TreeRow {
@@ -471,6 +608,16 @@ impl IdeShell {
         } else if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
             self.open_search(false);
         }
+        if ctx.input_mut(|i| {
+            i.consume_key(
+                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                egui::Key::P,
+            )
+        }) || ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::K))
+        {
+            self.open_palette();
+        }
+        self.command_palette(ctx);
         self.workspace_dialogs(ctx);
         self.install_dialogs(ctx);
         if self.preview_first_run
@@ -862,6 +1009,22 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
     }
 
     fn workspace_dialogs(&mut self, ctx: &Context) {
+        if self.open_file_dialog {
+            egui::Window::new("Open File")
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.label("File path (absolute, or relative to the current workspace)");
+                    ui.text_edit_singleline(&mut self.file_input);
+                    if ui.button("Open").clicked() {
+                        self.open_path(self.file_input.clone().into());
+                        self.open_file_dialog = false;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.open_file_dialog = false;
+                    }
+                });
+        }
+
         if self.open_folder {
             egui::Window::new("Open Folder")
                 .collapsible(false)
@@ -955,11 +1118,16 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                 "Ctrl K"
             };
             let width = (ui.available_width() - 380.0).clamp(160.0, 440.0);
-            ui.add_sized(
-                [width, 30.0],
-                Button::new(format!("Search files, symbols, commands...   {shortcut}")),
-            )
-            .on_hover_text("Command Center · available in a later milestone");
+            if ui
+                .add_sized(
+                    [width, 30.0],
+                    Button::new(format!("Search commands...   {shortcut}")),
+                )
+                .on_hover_text("Command Palette")
+                .clicked()
+            {
+                self.open_palette();
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
                     .add(Button::new("×").frame(false))
@@ -1252,6 +1420,14 @@ fn sidebar(ui: &mut Ui, theme: &Theme, active: usize) {
         "Hardware",
         "Settings",
     ][active];
+    if active == 1 {
+        ui.heading("Search");
+        ui.separator();
+        ui.label(
+            "Find in the current document or workspace. Results stream as files are searched.",
+        );
+        return;
+    }
     if active != 0 {
         ui.heading(title);
         ui.separator();
