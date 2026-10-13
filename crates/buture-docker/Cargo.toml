@@ -1,0 +1,12 @@
+[package]
+name = "buture-docker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Future container development tools."
+
+[lints]
+workspace = true

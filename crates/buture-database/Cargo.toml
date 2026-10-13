@@ -1,0 +1,12 @@
+[package]
+name = "buture-database"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Future database providers."
+
+[lints]
+workspace = true

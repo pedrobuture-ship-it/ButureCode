@@ -1,0 +1,13 @@
+# Seleção de dependências
+
+Bootstrap: biblioteca padrão Rust, sem dependências externas.
+
+## Toolkit nativo
+
+Avaliação realizada antes da UI:
+
+- **egui / eframe**: toolkit Rust mantido, crates versionados e documentação pública; backend nativo em Linux, Windows e macOS. Licença dual MIT OR Apache-2.0; selecionar Apache-2.0 na distribuição quando houver essa alternativa. Renderização imediata com repaints por interação, sem DOM/WebView. Adequado ao shell inicial; editor futuro precisará de virtualização e medições próprias. Não promete acessibilidade completa em todos os sistemas.
+- **GPUI**: toolkit Rust GPU com suporte a plataformas documentado pelo projeto. Avaliado, mas não selecionado neste marco devido ao acoplamento mais próximo ao ecossistema Zed e maior complexidade de integração/plataforma. Não copiar fontes do Zed.
+- **Tokio, Serde, Tree-sitter, ropey, notify, tracing, thiserror**: preferências para marcos que realmente precisem de async, persistência, parsing, buffers, watchers, logging e erros. Adicionar somente quando usados; nenhum pacote antecipado sem função neste ciclo.
+
+Fontes primárias: https://github.com/emilk/egui e https://docs.rs/eframe ; GPUI: https://github.com/zed-industries/zed/tree/main/crates/gpui . A licença do projeto não muda por usar dependências permissivas.

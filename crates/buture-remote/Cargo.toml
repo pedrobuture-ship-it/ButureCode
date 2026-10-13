@@ -1,0 +1,12 @@
+[package]
+name = "buture-remote"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Future SSH remote development."
+
+[lints]
+workspace = true

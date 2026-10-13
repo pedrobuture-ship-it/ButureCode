@@ -1,0 +1,1 @@
+//! Future project architecture graph.

@@ -1,0 +1,9 @@
+/target/
+/.agents/
+/.aws/
+/.codex/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store

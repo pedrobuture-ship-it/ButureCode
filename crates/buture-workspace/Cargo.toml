@@ -1,0 +1,12 @@
+[package]
+name = "buture-workspace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Future workspace state and file exploration."
+
+[lints]
+workspace = true
