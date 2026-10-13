@@ -1,4 +1,5 @@
 pub mod cpp;
+pub mod python;
 pub mod rust;
 // Independent providers share bounded discovery machinery.
 use crate::engine::{ToolSpec, ToolchainProvider};
@@ -19,10 +20,7 @@ pub fn registry() -> Vec<Box<dyn ToolchainProvider>> {
     vec![
         Box::new(rust::Rust),
         Box::new(cpp::Cpp),
-        Box::new(Provider {
-            language: "Python",
-            specs: || vec![ToolSpec::new("python3", Runtime)],
-        }),
+        Box::new(python::Python),
         Box::new(Provider {
             language: "Java",
             specs: || {
