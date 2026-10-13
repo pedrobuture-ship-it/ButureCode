@@ -17,3 +17,4 @@ buture-settings = { path = "../buture-settings" }
 buture-workspace = { path = "../buture-workspace" }
 buture-toolchains = { path = "../buture-toolchains" }
 buture-doctor = { path = "../buture-doctor" }
+buture-project = { path = "../buture-project" }

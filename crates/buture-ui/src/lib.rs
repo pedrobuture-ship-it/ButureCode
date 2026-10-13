@@ -11,4 +11,5 @@ pub use shell::IdeShell;
 pub mod doctor;
 pub mod explorer;
 pub mod onboarding;
+pub mod overview;
 pub mod toolchains;

@@ -112,6 +112,9 @@ pub struct IdeShell {
     doctor_scan: Option<buture_doctor::Scan>,
     doctor_requested: bool,
     show_doctor: bool,
+    show_project: bool,
+    project_scan: Option<buture_project::Scan>,
+    project: Option<buture_project::Detection>,
     doctor_selected: Option<usize>,
     manual_fix: Option<(String, String)>,
     setup: Option<buture_toolchains::install::SetupHost>,
@@ -157,6 +160,9 @@ impl IdeShell {
             doctor_scan: None,
             doctor_requested: false,
             show_doctor: false,
+            show_project: false,
+            project_scan: None,
+            project: None,
             doctor_selected: None,
             manual_fix: None,
             install_plan: None,
@@ -187,6 +193,7 @@ impl IdeShell {
         self.workspace.send(buture_workspace::Request::Open(path));
     }
     pub fn open_doctor(&mut self) {
+        self.show_project = false;
         self.show_doctor = true;
         self.show_toolchains = false;
         self.doctor_requested = true;
@@ -200,16 +207,38 @@ impl IdeShell {
         }
     }
     fn required_languages(&self) -> Vec<String> {
-        self.settings
-            .get("Languages.selected")
-            .unwrap_or("")
-            .split(',')
-            .filter(|l| !l.is_empty())
-            .map(String::from)
-            .collect()
+        let mut languages: Vec<String> = self
+            .project
+            .as_ref()
+            .map(|d| {
+                d.projects
+                    .iter()
+                    .flat_map(|p| p.languages.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if languages.is_empty() {
+            languages = self
+                .settings
+                .get("Languages.selected")
+                .unwrap_or("")
+                .split(',')
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect();
+        }
+        languages.sort();
+        languages.dedup();
+        languages
+    }
+    pub fn open_project_overview(&mut self) {
+        self.show_project = true;
+        self.show_doctor = false;
+        self.show_toolchains = false;
     }
     pub fn open_toolchain_manager(&mut self) {
         self.show_doctor = false;
+        self.show_project = false;
         self.active = 7;
         self.show_toolchains = true;
         self.pending_scan = true;
@@ -230,7 +259,10 @@ impl IdeShell {
         self.install_plan.is_some()
     }
     pub fn environment_scan_pending(&self) -> bool {
-        self.pending_scan || self.scan.is_some() || self.doctor_scan.is_some()
+        self.pending_scan
+            || self.scan.is_some()
+            || self.doctor_scan.is_some()
+            || self.project_scan.is_some()
     }
     /// Preview first run without reading or writing personal preferences.
     pub fn preview_onboarding(&mut self) {
@@ -262,6 +294,13 @@ impl IdeShell {
         }
     }
     pub fn show(&mut self, ctx: &Context) {
+        if let Some(scan) = &self.project_scan
+            && let Ok(detection) = scan.events.try_recv()
+        {
+            self.project = Some(detection);
+            self.project_scan = None;
+        }
+
         if let Some(scan) = &self.doctor_scan
             && let Ok(report) = scan.events.try_recv()
         {
@@ -345,6 +384,9 @@ impl IdeShell {
                     }
                     if self.root.as_ref() != Some(&root) {
                         self.preview = None;
+                        self.project = None;
+                        self.project_scan = Some(buture_project::Scan::start(root.clone()));
+                        self.doctor = None;
                         self.explorer.selected = None;
                     }
                     self.branch = branch;
@@ -578,7 +620,11 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                     sidebar(&mut side, &theme, self.active);
                 }
                 let mut center = region(ui, "editor", layout.editor.shrink(theme.spacing.md));
-                if self.show_doctor {
+                if self.show_project {
+                    if let Some(action)=crate::overview::show(&mut center,self.root.as_deref(),self.project.as_ref(),self.branch.as_deref(),self.project_scan.is_some()){
+                        match action{crate::overview::Action::Doctor=>self.open_doctor(),crate::overview::Action::Toolchains=>self.open_toolchain_manager(),crate::overview::Action::Open(path)=>{self.show_project=false;self.workspace.send(buture_workspace::Request::Read(path));}}
+                    }
+                } else if self.show_doctor {
                     if let Some(action)=crate::doctor::show(&mut center,&theme,self.doctor.as_ref(),self.scan.is_some() || self.doctor_scan.is_some(),&mut self.doctor_selected){
                         match action {
                             crate::doctor::Action::Scan=>self.open_doctor(),
