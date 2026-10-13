@@ -35,3 +35,5 @@ Fontes primárias consultadas: documentação e metadados crates.io dos upstream
 Fontes: https://docs.rs/ropey/1.6.1/ropey/ , https://tree-sitter.github.io/tree-sitter/using-parsers/ , https://docs.rs/ignore/0.4.33/ignore/ , https://github.com/rust-lang/regex , https://github.com/serde-rs/json e https://github.com/toml-rs/toml .
 
 Tree-sitter selecionado: **0.25.10**, MSRV upstream 1.76. Gramáticas fixadas na tabela de `THIRD_PARTY_NOTICES.md`; todos os parsers passam por teste de carga/ABI e parsing. Highlighting usa classificação própria de nós e tokens; não reutiliza código de produtos. O editor não executa comandos de grammars do workspace.
+
+Ropey usa `default-features = false` e `simd`: linhas por LF, com CRLF preservado no conteúdo. Isso alinha coordenadas com Tree-sitter; outros separadores Unicode permanecem caracteres do texto. UTF-8 é preservado, sem prometer navegação por graphemes neste marco.

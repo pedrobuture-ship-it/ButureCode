@@ -247,13 +247,67 @@ impl Buffer {
             false
         }
     }
+    /// Apply a disjoint edit transaction with one undo snapshot.
+    pub fn apply_edits(&mut self, edits: &[Edit]) -> Result<Vec<usize>, EditorError> {
+        let mut edits = edits.to_vec();
+        edits.sort_by_key(|e| (e.range.start, e.range.end));
+        let mut previous = 0;
+        let mut bytes = self.len_bytes() as i64;
+        let mut changed = false;
+        for (index, edit) in edits.iter().enumerate() {
+            if edit.range.start > edit.range.end
+                || edit.range.end > self.len_chars()
+                || (index > 0 && edit.range.start < previous)
+            {
+                return Err(EditorError::InvalidOffset);
+            }
+            previous = edit.range.end;
+            let original = self.rope.slice(edit.range.clone());
+            bytes += edit.text.len() as i64 - original.len_bytes() as i64;
+            changed |= original != edit.text.as_str();
+        }
+        if bytes < 0 || bytes as u64 > MAX_BYTES {
+            return Err(EditorError::TooLarge);
+        }
+        let mut delta = 0i64;
+        let mut heads = Vec::new();
+        for edit in &edits {
+            let length = edit.text.chars().count();
+            heads.push((edit.range.start as i64 + delta + length as i64) as usize);
+            delta += length as i64 - (edit.range.end - edit.range.start) as i64;
+        }
+        if changed {
+            self.remember();
+            for edit in edits.iter().rev() {
+                self.rope.remove(edit.range.clone());
+                self.rope.insert(edit.range.start, &edit.text);
+            }
+            for head in &heads {
+                let row = self.rope.char_to_line((*head).min(self.len_chars()));
+                self.width_hint = self.width_hint.max(self.rope.line(row).len_chars());
+            }
+            self.changed();
+        }
+        Ok(heads)
+    }
     pub fn revert_to_saved(&mut self) {
         self.remember();
         self.rope = self.saved.clone();
         self.id = self.saved_id;
         self.revision = self.revision.wrapping_add(1);
     }
-    pub fn save(&self) -> Result<Saved, EditorError> {
+    pub fn snapshot(&self) -> TextSnapshot {
+        TextSnapshot {
+            path: self
+                .path
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("Untitled")),
+            rope: self.rope.clone(),
+            revision: self.revision,
+            content_id: self.id,
+        }
+    }
+    pub fn check_disk(&self) -> Result<(), EditorError> {
         let path = self.path.as_ref().ok_or(EditorError::NoPath)?;
         if fs::symlink_metadata(path)?.file_type().is_symlink() {
             return Err(EditorError::OutsideWorkspace);
@@ -262,6 +316,11 @@ impl Buffer {
         if Rope::from_str(&current) != self.saved {
             return Err(EditorError::Conflict(path.clone()));
         }
+        Ok(())
+    }
+    pub fn save(&self) -> Result<Saved, EditorError> {
+        self.check_disk()?;
+        let path = self.path.as_ref().ok_or(EditorError::NoPath)?;
         let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let temporary = path.with_file_name(format!(
             ".buture-save-{}-{sequence}.tmp",
@@ -307,6 +366,19 @@ fn read_utf8(path: &Path) -> Result<String, EditorError> {
     }
     String::from_utf8(bytes).map_err(|_| EditorError::UnsupportedEncoding)
 }
+#[derive(Debug, Clone)]
+pub struct TextSnapshot {
+    pub path: PathBuf,
+    pub rope: Rope,
+    pub revision: u64,
+    pub content_id: u64,
+}
+#[derive(Debug, Clone)]
+pub struct Edit {
+    pub range: Range<usize>,
+    pub text: String,
+}
+
 #[derive(Debug)]
 pub struct Saved {
     pub path: PathBuf,
@@ -376,6 +448,7 @@ impl Files {
         });
     }
 }
+pub mod operations;
 pub mod parsing;
 pub mod session;
 

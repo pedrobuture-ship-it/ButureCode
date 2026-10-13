@@ -20,9 +20,15 @@ impl Selection {
         self.anchor == self.head
     }
 }
+type BracketCache = ((u64, usize, bool), Option<(usize, usize)>);
 #[derive(Default)]
 pub struct View {
     pub selection: Selection,
+    pub additional: Vec<Selection>,
+    folded: BTreeSet<usize>,
+    fold_revision: u64,
+    bracket_cache: Option<BracketCache>,
+    focus: Option<egui::Id>,
     pub follow_caret: bool,
     scroll: egui::Vec2,
     dragging: bool,
@@ -606,6 +612,32 @@ impl EditorSpace {
                 self.persist();
             }
         });
+        let mut command = None;
+        ui.menu_button("Edit", |ui| {
+            for (label, c) in [
+                ("Duplicate line", EditCommand::Duplicate),
+                ("Move lines up", EditCommand::MoveUp),
+                ("Move lines down", EditCommand::MoveDown),
+                ("Comment / uncomment", EditCommand::Comment),
+                ("Indent", EditCommand::Indent),
+                ("Outdent", EditCommand::Outdent),
+                ("Select next occurrence", EditCommand::Occurrence),
+                ("Add cursor above", EditCommand::CursorUp),
+                ("Add cursor below", EditCommand::CursorDown),
+                ("Clear extra cursors", EditCommand::ClearCursors),
+                ("Toggle fold at cursor", EditCommand::Fold),
+            ] {
+                if ui.button(label).clicked() {
+                    command = Some(c);
+                    ui.close();
+                }
+            }
+        });
+        if let Some(command) = command
+            && let Some(e) = self.perform(command)
+        {
+            error = Some(e);
+        }
         let count = self.groups.len();
         match self.orientation {
             buture_editor::session::Orientation::Horizontal => ui.columns(count, |columns| {
@@ -636,6 +668,21 @@ impl EditorSpace {
             }
         }
         error
+    }
+    pub fn perform(&mut self, command: EditCommand) -> Option<String> {
+        let index = self.groups[self.group_active].active?;
+        self.active = index;
+        let document = &mut self.documents[index];
+        let view = self.groups[self.group_active]
+            .views
+            .entry(index)
+            .or_default();
+        let parsed = document.parsed.as_deref().filter(|p| {
+            p.revision == document.buffer.revision && p.content_id == document.buffer.content_id()
+        });
+        execute(&mut document.buffer, view, command, parsed)
+            .err()
+            .map(|e| e.to_string())
     }
     pub fn active_path(&self) -> Option<&Path> {
         self.documents.get(self.active)?.buffer.path.as_deref()
@@ -729,12 +776,154 @@ fn move_caret(buffer: &Buffer, selection: &mut Selection, key: Key, shift: bool,
 fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
-fn insert(buffer: &mut Buffer, selection: &mut Selection, text: &str) -> Result<(), EditorError> {
-    let range = selection.range();
-    let end = range.start + text.chars().count();
-    buffer.replace(range, text)?;
-    selection.head = end;
-    selection.anchor = end;
+fn ranges(view: &View) -> Vec<Range<usize>> {
+    buture_editor::operations::normalized(
+        &std::iter::once(view.selection.range())
+            .chain(view.additional.iter().map(Selection::range))
+            .collect::<Vec<_>>(),
+    )
+}
+fn assign(view: &mut View, ranges: Vec<Range<usize>>) {
+    let mut ranges = ranges.into_iter();
+    if let Some(r) = ranges.next() {
+        view.selection = Selection {
+            anchor: r.start,
+            head: r.end,
+        };
+    }
+    view.additional = ranges
+        .map(|r| Selection {
+            anchor: r.start,
+            head: r.end,
+        })
+        .collect();
+    view.follow_caret = true;
+}
+#[derive(Debug, Clone, Copy)]
+pub enum EditCommand {
+    Duplicate,
+    MoveUp,
+    MoveDown,
+    Comment,
+    Indent,
+    Outdent,
+    Occurrence,
+    CursorUp,
+    CursorDown,
+    ClearCursors,
+    Fold,
+    Undo,
+    Redo,
+    SelectAll,
+}
+pub fn execute(
+    buffer: &mut Buffer,
+    view: &mut View,
+    command: EditCommand,
+    parsed: Option<&buture_editor::parsing::Parsed>,
+) -> Result<(), EditorError> {
+    let selected = ranges(view);
+    let result = match command {
+        EditCommand::Duplicate => Some(buture_editor::operations::duplicate_lines(
+            buffer, &selected,
+        )?),
+        EditCommand::MoveUp | EditCommand::MoveDown => Some(buture_editor::operations::move_lines(
+            buffer,
+            &selected,
+            matches!(command, EditCommand::MoveUp),
+        )?),
+        EditCommand::Comment => {
+            let marker = match buffer
+                .path
+                .as_deref()
+                .and_then(|p| p.extension())
+                .and_then(|s| s.to_str())
+            {
+                Some("py" | "toml" | "yaml" | "yml" | "sh") => "#",
+                _ => "//",
+            };
+            Some(buture_editor::operations::comment(
+                buffer, &selected, marker,
+            )?)
+        }
+        EditCommand::Indent | EditCommand::Outdent => Some(buture_editor::operations::indent(
+            buffer,
+            &selected,
+            matches!(command, EditCommand::Outdent),
+        )?),
+        EditCommand::Occurrence => {
+            if let Some(next) = buture_editor::operations::next_occurrence(buffer, &selected) {
+                if view.selection.empty() && view.additional.is_empty() {
+                    Some(std::iter::once(next).collect())
+                } else {
+                    let mut ranges = selected;
+                    ranges.push(next);
+                    Some(ranges)
+                }
+            } else {
+                None
+            }
+        }
+        EditCommand::CursorUp | EditCommand::CursorDown => {
+            let mut next = view.selection.clone();
+            move_caret(
+                buffer,
+                &mut next,
+                if matches!(command, EditCommand::CursorUp) {
+                    Key::ArrowUp
+                } else {
+                    Key::ArrowDown
+                },
+                false,
+                false,
+            );
+            if next.head != view.selection.head {
+                view.additional.push(view.selection.clone());
+                view.selection = next;
+            }
+            None
+        }
+        EditCommand::ClearCursors => {
+            view.additional.clear();
+            None
+        }
+        EditCommand::Fold => {
+            if let Some(parsed) = parsed {
+                let row = buffer.char_to_line(view.selection.head)?;
+                if let Some(range) = parsed.folds.iter().find(|r| r.start == row) {
+                    if !view.folded.remove(&row) {
+                        view.folded.insert(row);
+                        view.selection.head = buffer.offset(
+                            row,
+                            buffer
+                                .line(row)?
+                                .trim_end_matches(['\r', '\n'])
+                                .chars()
+                                .count(),
+                        )?;
+                        view.selection.anchor = view.selection.head;
+                    }
+                    let _ = range;
+                }
+            }
+            None
+        }
+        EditCommand::Undo | EditCommand::Redo => {
+            if matches!(command, EditCommand::Undo) {
+                buffer.undo();
+            } else {
+                buffer.redo();
+            }
+            view.selection.head = view.selection.head.min(buffer.len_chars());
+            view.selection.anchor = view.selection.head;
+            view.additional.clear();
+            None
+        }
+        EditCommand::SelectAll => Some(std::iter::once(0..buffer.len_chars()).collect()),
+    };
+    if let Some(result) = result {
+        assign(view, result);
+    }
     Ok(())
 }
 fn input(ui: &mut Ui, buffer: &mut Buffer, view: &mut View) -> Result<bool, EditorError> {
@@ -744,21 +933,30 @@ fn input(ui: &mut Ui, buffer: &mut Buffer, view: &mut View) -> Result<bool, Edit
     for event in events {
         match event {
             Event::Text(text) | Event::Ime(egui::ImeEvent::Commit(text)) => {
-                insert(buffer, &mut view.selection, &text)?
+                let result = buture_editor::operations::insert(buffer, &ranges(view), &text, true)?;
+                assign(view, result);
             }
             Event::Paste(text) => {
                 let text = text
                     .replace("\r\n", "\n")
                     .replace('\r', "\n")
                     .replace('\n', buffer.line_ending.text());
-                insert(buffer, &mut view.selection, &text)?;
+                let result =
+                    buture_editor::operations::insert(buffer, &ranges(view), &text, false)?;
+                assign(view, result);
             }
-            Event::Copy => {
-                ui.ctx().copy_text(buffer.slice(view.selection.range())?);
-            }
-            Event::Cut => {
-                ui.ctx().copy_text(buffer.slice(view.selection.range())?);
-                insert(buffer, &mut view.selection, "")?;
+            Event::Copy | Event::Cut => {
+                let selected = ranges(view);
+                let text = selected
+                    .iter()
+                    .map(|r| buffer.slice(r.clone()))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(buffer.line_ending.text());
+                ui.ctx().copy_text(text);
+                if matches!(event, Event::Cut) {
+                    let result = buture_editor::operations::insert(buffer, &selected, "", false)?;
+                    assign(view, result);
+                }
             }
             Event::Key {
                 key,
@@ -766,62 +964,110 @@ fn input(ui: &mut Ui, buffer: &mut Buffer, view: &mut View) -> Result<bool, Edit
                 modifiers,
                 ..
             } => {
-                if modifiers.command {
+                if modifiers.command
+                    && modifiers.alt
+                    && matches!(key, Key::ArrowUp | Key::ArrowDown)
+                {
+                    execute(
+                        buffer,
+                        view,
+                        if key == Key::ArrowUp {
+                            EditCommand::CursorUp
+                        } else {
+                            EditCommand::CursorDown
+                        },
+                        None,
+                    )?;
+                } else if modifiers.alt && matches!(key, Key::ArrowUp | Key::ArrowDown) {
+                    execute(
+                        buffer,
+                        view,
+                        if modifiers.shift {
+                            EditCommand::Duplicate
+                        } else if key == Key::ArrowUp {
+                            EditCommand::MoveUp
+                        } else {
+                            EditCommand::MoveDown
+                        },
+                        None,
+                    )?;
+                } else if modifiers.command {
                     match key {
                         Key::S => save = true,
-                        Key::A => {
-                            view.selection.anchor = 0;
-                            view.selection.head = buffer.len_chars();
-                        }
-                        Key::Z => {
+                        Key::A => execute(buffer, view, EditCommand::SelectAll, None)?,
+                        Key::Z => execute(
+                            buffer,
+                            view,
                             if modifiers.shift {
-                                buffer.redo();
+                                EditCommand::Redo
                             } else {
-                                buffer.undo();
-                            }
-                            view.selection.head = view.selection.head.min(buffer.len_chars());
-                            view.selection.anchor = view.selection.head;
-                        }
-                        Key::Y => {
-                            buffer.redo();
-                            view.selection.head = view.selection.head.min(buffer.len_chars());
-                            view.selection.anchor = view.selection.head;
-                        }
+                                EditCommand::Undo
+                            },
+                            None,
+                        )?,
+                        Key::Y => execute(buffer, view, EditCommand::Redo, None)?,
+                        Key::D => execute(buffer, view, EditCommand::Occurrence, None)?,
+                        Key::Slash => execute(buffer, view, EditCommand::Comment, None)?,
+                        Key::OpenBracket => execute(buffer, view, EditCommand::Outdent, None)?,
+                        Key::CloseBracket => execute(buffer, view, EditCommand::Indent, None)?,
                         _ => {
                             move_caret(buffer, &mut view.selection, key, modifiers.shift, true);
+                            for selection in &mut view.additional {
+                                move_caret(buffer, selection, key, modifiers.shift, true);
+                            }
                         }
                     }
                 } else {
                     match key {
                         Key::Enter => {
-                            insert(buffer, &mut view.selection, buffer.line_ending.text())?;
+                            let result = buture_editor::operations::newline(buffer, &ranges(view))?;
+                            assign(view, result);
                         }
-                        Key::Tab => insert(buffer, &mut view.selection, "    ")?,
+                        Key::Tab => execute(
+                            buffer,
+                            view,
+                            if modifiers.shift {
+                                EditCommand::Outdent
+                            } else {
+                                EditCommand::Indent
+                            },
+                            None,
+                        )?,
+                        Key::Escape => view.additional.clear(),
                         Key::Backspace | Key::Delete => {
-                            if view.selection.empty() {
-                                let head = view.selection.head;
-                                if key == Key::Backspace {
+                            for selection in std::iter::once(&mut view.selection)
+                                .chain(view.additional.iter_mut())
+                            {
+                                if selection.empty() {
+                                    let head = selection.head;
                                     move_caret(
                                         buffer,
-                                        &mut view.selection,
-                                        Key::ArrowLeft,
+                                        selection,
+                                        if key == Key::Backspace {
+                                            Key::ArrowLeft
+                                        } else {
+                                            Key::ArrowRight
+                                        },
                                         true,
                                         false,
                                     );
-                                } else {
-                                    move_caret(
-                                        buffer,
-                                        &mut view.selection,
-                                        Key::ArrowRight,
-                                        true,
-                                        false,
-                                    );
+                                    selection.anchor = head;
                                 }
-                                view.selection.anchor = head;
                             }
-                            insert(buffer, &mut view.selection, "")?;
+                            let result = buture_editor::operations::insert(
+                                buffer,
+                                &ranges(view),
+                                "",
+                                false,
+                            )?;
+                            assign(view, result);
                         }
-                        _ => move_caret(buffer, &mut view.selection, key, modifiers.shift, false),
+                        _ => {
+                            move_caret(buffer, &mut view.selection, key, modifiers.shift, false);
+                            for selection in &mut view.additional {
+                                move_caret(buffer, selection, key, modifiers.shift, false);
+                            }
+                        }
                     }
                 }
                 view.follow_caret = true;
@@ -833,6 +1079,47 @@ fn input(ui: &mut Ui, buffer: &mut Buffer, view: &mut View) -> Result<bool, Edit
         view.follow_caret = true;
     }
     Ok(save)
+}
+fn hidden_rows(
+    parsed: Option<&buture_editor::parsing::Parsed>,
+    folded: &BTreeSet<usize>,
+) -> Vec<Range<usize>> {
+    let Some(parsed) = parsed else {
+        return Vec::new();
+    };
+    let mut output: Vec<Range<usize>> = Vec::new();
+    for start in folded {
+        let first = parsed.folds.partition_point(|r| r.start < *start);
+        if let Some(end) = parsed.folds[first..]
+            .iter()
+            .take_while(|r| r.start == *start)
+            .map(|r| r.end)
+            .max()
+            && output.last().is_none_or(|r| r.end <= *start)
+        {
+            output.push(start + 1..end);
+        }
+    }
+    output
+}
+fn source_row(visible: usize, hidden: &[Range<usize>]) -> usize {
+    let mut row = visible;
+    for range in hidden {
+        if row >= range.start {
+            row += range.len();
+        } else {
+            break;
+        }
+    }
+    row
+}
+fn visible_row(source: usize, hidden: &[Range<usize>]) -> usize {
+    source
+        - hidden
+            .iter()
+            .filter(|r| r.end <= source)
+            .map(Range::len)
+            .sum::<usize>()
 }
 fn expand_tabs(source: &str) -> (String, Vec<usize>) {
     let mut text = String::new();
@@ -884,13 +1171,39 @@ fn render_parsed(
     let gutter = 60.0;
     let parsed =
         parsed.filter(|p| p.revision == buffer.revision && p.content_id == buffer.content_id());
+    view.focus = Some(id);
+    if view.fold_revision != buffer.revision {
+        view.folded.clear();
+        view.fold_revision = buffer.revision;
+    }
+    let mut hidden = hidden_rows(parsed, &view.folded);
     let caret_row = buffer.char_to_line(view.selection.head)?;
+    if hidden.iter().any(|r| r.contains(&caret_row)) {
+        view.folded.retain(|start| {
+            !hidden
+                .iter()
+                .any(|r| r.start == start + 1 && r.contains(&caret_row))
+        });
+        hidden = hidden_rows(parsed, &view.folded);
+    }
+    let bracket_key = (buffer.revision, view.selection.head, parsed.is_some());
+    if view
+        .bracket_cache
+        .as_ref()
+        .is_none_or(|(key, _)| *key != bracket_key)
+    {
+        view.bracket_cache = Some((
+            bracket_key,
+            buture_editor::operations::matching_bracket(buffer, view.selection.head, parsed),
+        ));
+    }
+
     let char_width = ui.fonts_mut(|f| f.glyph_width(&font, 'M'));
     let mut scroll = egui::ScrollArea::both()
         .id_salt("code-scroll")
         .auto_shrink([false, false]);
     if view.follow_caret {
-        let y = caret_row as f32 * row_height;
+        let y = visible_row(caret_row, &hidden) as f32 * row_height;
         let height = ui.available_height() - 32.0;
         if y < view.scroll.y {
             scroll = scroll.vertical_scroll_offset(y);
@@ -909,12 +1222,14 @@ fn render_parsed(
     if !ui.input(|i| i.pointer.primary_down()) {
         view.dragging = false;
     }
-    let output = scroll.show_rows(ui, row_height, buffer.line_count(), |ui, range| {
+    let visible_count = buffer.line_count() - hidden.iter().map(Range::len).sum::<usize>();
+    let output = scroll.show_rows(ui, row_height, visible_count, |ui, range| {
         ui.set_min_width(
             (buffer.width_hint.min(100_000) as f32 * char_width + gutter + 20.0)
                 .max(ui.available_width()),
         );
-        for row in range {
+        for visible in range {
+            let row = source_row(visible, &hidden);
             let source = buffer.line(row).unwrap_or_default();
             let source = source.trim_end_matches(['\r', '\n']);
             let (display, map) = expand_tabs(source);
@@ -935,6 +1250,11 @@ fn render_parsed(
             );
             let text_pos = pos2(rect.left() + gutter, rect.top() + 2.0);
             let start = buffer.line_start(row).unwrap_or(0);
+            if response.clicked() && ui.input(|i| i.modifiers.alt) {
+                view.additional.push(view.selection.clone());
+            } else if response.clicked() && !ui.input(|i| i.modifiers.shift) {
+                view.additional.clear();
+            }
             if response.drag_started() {
                 view.dragging = true;
                 if !ui.input(|i| i.modifiers.shift)
@@ -974,32 +1294,77 @@ fn render_parsed(
                 font.clone(),
                 theme.text.muted.into(),
             );
-            let selected = view.selection.range();
             let end = start + source.chars().count();
-            if selected.start <= end && selected.end > start {
-                let a = selected.start.saturating_sub(start).min(end - start);
-                let b = selected.end.saturating_sub(start).min(end - start);
-                let da = map.iter().position(|p| *p == a).unwrap_or(0);
-                let db = map.iter().rposition(|p| *p == b).unwrap_or(map.len() - 1);
-                let x1 = galley.pos_from_cursor(CCursor::new(da)).left();
-                let x2 = galley.pos_from_cursor(CCursor::new(db)).left();
-                ui.painter().rect_filled(
-                    egui::Rect::from_min_max(
-                        pos2(text_pos.x + x1, rect.top()),
-                        pos2(text_pos.x + x2.max(x1 + char_width), rect.bottom()),
-                    ),
-                    0,
-                    Color32::from(theme.accent.emerald_muted),
-                );
+            for selection in std::iter::once(&view.selection).chain(view.additional.iter()) {
+                let selected = selection.range();
+                if selected.start <= end && selected.end > start {
+                    let a = selected.start.saturating_sub(start).min(end - start);
+                    let b = selected.end.saturating_sub(start).min(end - start);
+                    let da = map.iter().position(|p| *p == a).unwrap_or(0);
+                    let db = map.iter().rposition(|p| *p == b).unwrap_or(map.len() - 1);
+                    let x1 = galley.pos_from_cursor(CCursor::new(da)).left();
+                    let x2 = galley.pos_from_cursor(CCursor::new(db)).left();
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_max(
+                            pos2(text_pos.x + x1, rect.top()),
+                            pos2(text_pos.x + x2.max(x1 + char_width), rect.bottom()),
+                        ),
+                        0,
+                        Color32::from(theme.accent.emerald_muted),
+                    );
+                }
+                if focused && row == caret_row && ui.input(|i| i.time % 1.0 < 0.65) {
+                    let col = selection.head - start;
+                    let display_col = map.iter().rposition(|p| *p == col).unwrap_or(map.len() - 1);
+                    let x = galley.pos_from_cursor(CCursor::new(display_col)).left() + text_pos.x;
+                    ui.painter().line_segment(
+                        [pos2(x, rect.top() + 2.0), pos2(x, rect.bottom() - 2.0)],
+                        Stroke::new(1.5_f32, Color32::from(theme.accent.emerald)),
+                    );
+                }
             }
-            if focused && row == caret_row && ui.input(|i| i.time % 1.0 < 0.65) {
-                let col = view.selection.head - start;
-                let display_col = map.iter().rposition(|p| *p == col).unwrap_or(map.len() - 1);
-                let x = galley.pos_from_cursor(CCursor::new(display_col)).left() + text_pos.x;
-                ui.painter().line_segment(
-                    [pos2(x, rect.top() + 2.0), pos2(x, rect.bottom() - 2.0)],
-                    Stroke::new(1.5_f32, Color32::from(theme.accent.emerald)),
-                );
+            if let Some((_, Some((a, b)))) = view.bracket_cache {
+                for position in [a, b] {
+                    if position >= start && position < end {
+                        let index = map.iter().position(|p| *p == position - start).unwrap_or(0);
+                        let rect = galley
+                            .pos_from_cursor(CCursor::new(index))
+                            .translate(text_pos.to_vec2())
+                            .expand2(vec2(char_width * 0.5, 0.0));
+                        ui.painter().rect_stroke(
+                            rect,
+                            2,
+                            Stroke::new(1.0_f32, Color32::from(theme.accent.emerald)),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                }
+            }
+            if let Some(parsed) = parsed {
+                let first = parsed.folds.partition_point(|r| r.start < row);
+                if parsed.folds.get(first).is_some_and(|r| r.start == row) {
+                    let fold_rect = egui::Rect::from_min_size(
+                        pos2(rect.left() + 4.0, rect.top()),
+                        vec2(16.0, row_height),
+                    );
+                    let response = ui.interact(fold_rect, id.with(("fold", row)), Sense::click());
+                    ui.painter().text(
+                        fold_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        if view.folded.contains(&row) { "+" } else { "-" },
+                        font.clone(),
+                        theme.text.muted.into(),
+                    );
+                    if response.clicked() {
+                        if !view.folded.remove(&row) {
+                            view.folded.insert(row);
+                            view.selection.head = start + source.chars().count();
+                            view.selection.anchor = view.selection.head;
+                            view.additional.clear();
+                        }
+                        ui.ctx().request_repaint();
+                    }
+                }
             }
             ui.painter()
                 .galley(text_pos, galley, theme.text.primary.into());
@@ -1009,9 +1374,10 @@ fn render_parsed(
     let (row, col) = buffer.position(view.selection.head)?;
     ui.label(
         RichText::new(format!(
-            "Ln {}, Col {} · UTF-8 · {:?}",
+            "Ln {}, Col {} · {} cursor(s) · UTF-8 · {:?}",
             row + 1,
             col + 1,
+            view.additional.len() + 1,
             buffer.line_ending
         ))
         .small(),
@@ -1139,5 +1505,22 @@ mod tests {
             space.documents[0].buffer.rope().to_string(),
             "edited shared"
         );
+    }
+    #[test]
+    fn occurrence_selection_replaces_all_cursors_and_undoes_once() {
+        let mut buffer = Buffer::from_text("item item");
+        let mut view = View {
+            selection: Selection { anchor: 0, head: 4 },
+            ..Default::default()
+        };
+        execute(&mut buffer, &mut view, EditCommand::Occurrence, None).expect("occurrence");
+        assert_eq!(view.additional.len(), 1);
+        let result = buture_editor::operations::insert(&mut buffer, &ranges(&view), "🦀", false)
+            .expect("edit");
+        assign(&mut view, result);
+        assert_eq!(buffer.rope().to_string(), "🦀 🦀");
+        execute(&mut buffer, &mut view, EditCommand::Undo, None).expect("undo");
+        assert_eq!(buffer.rope().to_string(), "item item");
+        assert!(!buffer.dirty());
     }
 }
