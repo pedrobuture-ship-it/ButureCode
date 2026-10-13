@@ -89,6 +89,7 @@ pub struct IdeShell {
     file_menu: Option<std::path::PathBuf>,
     file_name: String,
     preview: Option<(std::path::PathBuf, String, Vec<usize>)>,
+    editors: crate::editor::EditorSpace,
     message: String,
     preferences: Option<buture_settings::Preferences>,
     preferences_loaded: bool,
@@ -141,6 +142,7 @@ impl IdeShell {
             file_menu: None,
             file_name: String::new(),
             preview: None,
+            editors: Default::default(),
             message: String::new(),
             preferences: None,
             preferences_loaded: false,
@@ -191,6 +193,15 @@ impl IdeShell {
     }
     pub fn open_workspace(&self, path: std::path::PathBuf) {
         self.workspace.send(buture_workspace::Request::Open(path));
+    }
+    pub fn open_file(&mut self, path: std::path::PathBuf) {
+        if let Some(root) = &self.root {
+            self.editors.open(root.clone(), path);
+            self.show_doctor = false;
+            self.show_project = false;
+            self.show_toolchains = false;
+            self.active = 0;
+        }
     }
     pub fn open_doctor(&mut self) {
         self.show_project = false;
@@ -263,6 +274,7 @@ impl IdeShell {
             || self.scan.is_some()
             || self.doctor_scan.is_some()
             || self.project_scan.is_some()
+            || !self.editors.loading.is_empty()
     }
     /// Preview first run without reading or writing personal preferences.
     pub fn preview_onboarding(&mut self) {
@@ -294,6 +306,9 @@ impl IdeShell {
         }
     }
     pub fn show(&mut self, ctx: &Context) {
+        if let Some(error) = self.editors.poll() {
+            self.message = error;
+        }
         if let Some(scan) = &self.project_scan
             && let Ok(detection) = scan.events.try_recv()
         {
@@ -576,9 +591,7 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                             TreeAction::Toggle(path) => {
                                 self.workspace.send(buture_workspace::Request::Toggle(path))
                             }
-                            TreeAction::Open(path) => {
-                                self.workspace.send(buture_workspace::Request::Read(path))
-                            }
+                            TreeAction::Open(path) => {self.open_file(path);}
                             TreeAction::Menu(path) => {
                                 self.file_menu = Some(path);
                                 self.file_name.clear();
@@ -622,7 +635,7 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                 let mut center = region(ui, "editor", layout.editor.shrink(theme.spacing.md));
                 if self.show_project {
                     if let Some(action)=crate::overview::show(&mut center,self.root.as_deref(),self.project.as_ref(),self.branch.as_deref(),self.project_scan.is_some()){
-                        match action{crate::overview::Action::Doctor=>self.open_doctor(),crate::overview::Action::Toolchains=>self.open_toolchain_manager(),crate::overview::Action::Open(path)=>{self.show_project=false;self.workspace.send(buture_workspace::Request::Read(path));}}
+                        match action{crate::overview::Action::Doctor=>self.open_doctor(),crate::overview::Action::Toolchains=>self.open_toolchain_manager(),crate::overview::Action::Open(path)=>self.open_file(path),}
                     }
                 } else if self.show_doctor {
                     if let Some(action)=crate::doctor::show(&mut center,&theme,self.doctor.as_ref(),self.scan.is_some() || self.doctor_scan.is_some(),&mut self.doctor_selected){
@@ -658,6 +671,8 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                             }
                         }
                     }
+                } else if !self.editors.documents.is_empty() || !self.editors.loading.is_empty() {
+                    if let Some(error)=self.editors.show(&mut center,&theme){self.message=error;}
                 } else if let Some((path, text, offsets)) = &self.preview {
                     center.label(path.display().to_string());
                     center.label("Read-only preview · editing belongs to prompt 25");

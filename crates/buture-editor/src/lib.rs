@@ -329,6 +329,23 @@ impl Files {
         std::thread::spawn(move || {
             let result = (|| {
                 let root = fs::canonicalize(root)?;
+                if !path.starts_with(&root) {
+                    return Err(EditorError::OutsideWorkspace);
+                }
+                let mut cursor = root.clone();
+                for component in path
+                    .strip_prefix(&root)
+                    .map_err(|_| EditorError::OutsideWorkspace)?
+                    .components()
+                {
+                    if !matches!(component, std::path::Component::Normal(_)) {
+                        return Err(EditorError::OutsideWorkspace);
+                    }
+                    cursor.push(component);
+                    if fs::symlink_metadata(&cursor)?.file_type().is_symlink() {
+                        return Err(EditorError::OutsideWorkspace);
+                    }
+                }
                 let path = fs::canonicalize(&path)?;
                 if !path.starts_with(&root) {
                     return Err(EditorError::OutsideWorkspace);

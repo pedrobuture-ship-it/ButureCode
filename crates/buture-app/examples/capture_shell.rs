@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 11] = [
+const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 12] = [
     ("full", VisualEffects::Full, [1440.0, 900.0], true, true),
     (
         "reduced",
@@ -33,6 +33,7 @@ const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 11] = [
         false,
         false,
     ),
+    ("editor", VisualEffects::Full, [1440.0, 900.0], false, false),
     (
         "overview",
         VisualEffects::Full,
@@ -142,6 +143,12 @@ impl eframe::App for Capture {
             if CASES[self.index].0 == "explorer" {
                 self.shell
                     .open_workspace(std::env::current_dir().unwrap_or_default());
+            }
+            if CASES[self.index].0 == "editor"
+                && let Ok(root) = std::env::current_dir()
+            {
+                self.shell
+                    .open_file(root.join("crates/buture-app/src/main.rs"));
             }
             if CASES[self.index].0 == "overview" {
                 self.shell.open_project_overview();
