@@ -32,6 +32,8 @@ pub struct Document {
     pub view: View,
     pub pinned: bool,
     pub preview: bool,
+    pub parsed: Option<std::sync::Arc<buture_editor::parsing::Parsed>>,
+    parse_requested: Option<(u64, u64)>,
 }
 #[derive(Default)]
 pub struct Group {
@@ -45,6 +47,7 @@ pub struct EditorSpace {
     pub groups: Vec<Group>,
     pub group_active: usize,
     pub files: Files,
+    parsing: buture_editor::parsing::Service,
     pub saving: BTreeSet<PathBuf>,
     pub loading: BTreeSet<PathBuf>,
     preview_requests: BTreeSet<PathBuf>,
@@ -67,6 +70,7 @@ impl Default for EditorSpace {
             groups: vec![Group::default()],
             group_active: 0,
             files: Files::default(),
+            parsing: Default::default(),
             saving: BTreeSet::new(),
             loading: BTreeSet::new(),
             preview_requests: BTreeSet::new(),
@@ -321,6 +325,36 @@ impl EditorSpace {
         }
 
         let mut message = None;
+        while let Ok(event) = self.parsing.events.try_recv() {
+            if let Some(document) = self
+                .documents
+                .iter_mut()
+                .find(|d| d.buffer.path.as_ref() == Some(&event.path))
+            {
+                match event.result {
+                    Ok(parsed)
+                        if parsed.revision == document.buffer.revision
+                            && parsed.content_id == document.buffer.content_id() =>
+                    {
+                        document.parsed = Some(std::sync::Arc::new(parsed))
+                    }
+                    Ok(_) => {}
+                    Err(error) => message = Some(format!("Parser: {error}")),
+                }
+            }
+        }
+        for document in &mut self.documents {
+            let key = (document.buffer.revision, document.buffer.content_id());
+            if document.parse_requested != Some(key)
+                && let Some(path) = &document.buffer.path
+                && buture_editor::parsing::LanguageKind::from_path(path).is_some()
+                && self
+                    .parsing
+                    .request(path.clone(), document.buffer.rope().clone(), key.0, key.1)
+            {
+                document.parse_requested = Some(key);
+            }
+        }
         while let Ok(event) = self.files.events.try_recv() {
             match event {
                 FileEvent::Opened(buffer) => {
@@ -358,6 +392,8 @@ impl EditorSpace {
                         view: View::default(),
                         pinned: false,
                         preview,
+                        parsed: None,
+                        parse_requested: None,
                     };
                     if index == self.documents.len() {
                         self.documents.push(document);
@@ -529,7 +565,10 @@ impl EditorSpace {
         }
         let view = self.groups[owner].views.entry(active).or_default();
         let mut error = None;
-        match render(ui, theme, &mut document.buffer, view) {
+        let parsed = document.parsed.as_deref().filter(|p| {
+            p.revision == document.buffer.revision && p.content_id == document.buffer.content_id()
+        });
+        match render_parsed(ui, theme, &mut document.buffer, view, parsed) {
             Ok(request) => save |= request,
             Err(e) => error = Some(e.to_string()),
         }
@@ -571,6 +610,7 @@ impl EditorSpace {
         match self.orientation {
             buture_editor::session::Orientation::Horizontal => ui.columns(count, |columns| {
                 for (index, column) in columns.iter_mut().enumerate() {
+                    column.set_clip_rect(column.clip_rect().intersect(column.max_rect()));
                     column.push_id(index, |ui| {
                         if let Some(e) = self.show_group(ui, theme, index) {
                             error = Some(e);
@@ -820,6 +860,15 @@ pub fn render(
     buffer: &mut Buffer,
     view: &mut View,
 ) -> Result<bool, EditorError> {
+    render_parsed(ui, theme, buffer, view, None)
+}
+fn render_parsed(
+    ui: &mut Ui,
+    theme: &Theme,
+    buffer: &mut Buffer,
+    view: &mut View,
+    parsed: Option<&buture_editor::parsing::Parsed>,
+) -> Result<bool, EditorError> {
     let id = ui.id().with("code-editor");
     ui.interact(ui.max_rect(), id, Sense::focusable_noninteractive());
     view.selection.head = view.selection.head.min(buffer.len_chars());
@@ -833,6 +882,8 @@ pub fn render(
     let font = FontId::monospace(theme.typography.code);
     let row_height = theme.typography.code + 6.0;
     let gutter = 60.0;
+    let parsed =
+        parsed.filter(|p| p.revision == buffer.revision && p.content_id == buffer.content_id());
     let caret_row = buffer.char_to_line(view.selection.head)?;
     let char_width = ui.fonts_mut(|f| f.glyph_width(&font, 'M'));
     let mut scroll = egui::ScrollArea::both()
@@ -867,9 +918,17 @@ pub fn render(
             let source = buffer.line(row).unwrap_or_default();
             let source = source.trim_end_matches(['\r', '\n']);
             let (display, map) = expand_tabs(source);
-            let galley =
-                ui.painter()
-                    .layout_job(crate::syntax::layout(&display, font.clone(), theme));
+            let galley = ui.painter().layout_job(crate::syntax::layout_parsed(
+                source,
+                &display,
+                &map,
+                buffer
+                    .char_to_byte(buffer.line_start(row).unwrap_or(0))
+                    .unwrap_or(0),
+                parsed,
+                font.clone(),
+                theme,
+            ));
             let (rect, response) = ui.allocate_exact_size(
                 vec2(ui.available_width(), row_height),
                 Sense::click_and_drag(),
@@ -1034,6 +1093,8 @@ mod tests {
                 view: View::default(),
                 pinned: i == 1,
                 preview: false,
+                parsed: None,
+                parse_requested: None,
             });
         }
         space.documents[2]
@@ -1059,6 +1120,8 @@ mod tests {
             view: View::default(),
             pinned: false,
             preview: false,
+            parsed: None,
+            parse_requested: None,
         });
         space.groups[0].tabs = vec![0];
         space.groups[0].active = Some(0);

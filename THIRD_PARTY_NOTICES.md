@@ -34,3 +34,9 @@ Preservar os textos e notices dos pacotes, inclusive dependências transitivas d
 ## Buffer — prompt 25
 
 - ropey 1.6.1: MIT OR Apache-2.0, https://github.com/cessen/ropey . Selecionar Apache-2.0 onde aplicável e preservar avisos transitivos (`str_indices` e `smallvec` no lockfile).
+
+## Parsing — prompt 30
+
+Tree-sitter runtime 0.25.10 e gramáticas: tree-sitter-rust 0.24.2, tree-sitter-c 0.24.2, tree-sitter-cpp 0.23.4, tree-sitter-python 0.25.0, tree-sitter-java 0.23.5, tree-sitter-javascript 0.25.0, tree-sitter-typescript 0.23.2, tree-sitter-go 0.25.0, tree-sitter-json 0.24.8, tree-sitter-toml-ng 0.7.0, tree-sitter-yaml 0.7.2 e tree-sitter-md 0.5.3: MIT, dos upstreams `tree-sitter` e `tree-sitter-grammars`. Preservar os textos MIT próprios e notices das gramáticas, incluindo scanners externos e pacotes transitivos. A licença MIT das dependências não se aplica ao código autoral.
+
+Repositórios: https://github.com/tree-sitter/tree-sitter e https://github.com/tree-sitter-grammars . O código autoral chama apenas APIs Rust seguras; FFI e scanners C ficam nas dependências.

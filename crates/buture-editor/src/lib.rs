@@ -376,6 +376,7 @@ impl Files {
         });
     }
 }
+pub mod parsing;
 pub mod session;
 
 #[cfg(test)]

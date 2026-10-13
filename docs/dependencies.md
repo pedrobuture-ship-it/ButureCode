@@ -33,3 +33,5 @@ Fontes primárias consultadas: documentação e metadados crates.io dos upstream
 - Tree-sitter : runtime C com binding Rust e parsers upstream; MIT para runtime/gramáticas, compatível Windows/Linux/macOS mas exige compilador C no build. A versão 0.27.1 exige Rust 1.90; selecionar 0.25.x compatível com MSRV 1.88 e validar ABI/linguagens. Gramáticas Rust/C/C++/Python/Java/JavaScript/TypeScript/Go/JSON e tree-sitter-grammars TOML/YAML/Markdown; versões fixadas e testes de cada parser. Sem código copiado de VS Code ou Zed. `unsafe` fica nas dependências; nenhum FFI unsafe no código autoral.
 
 Fontes: https://docs.rs/ropey/1.6.1/ropey/ , https://tree-sitter.github.io/tree-sitter/using-parsers/ , https://docs.rs/ignore/0.4.33/ignore/ , https://github.com/rust-lang/regex , https://github.com/serde-rs/json e https://github.com/toml-rs/toml .
+
+Tree-sitter selecionado: **0.25.10**, MSRV upstream 1.76. Gramáticas fixadas na tabela de `THIRD_PARTY_NOTICES.md`; todos os parsers passam por teste de carga/ABI e parsing. Highlighting usa classificação própria de nós e tokens; não reutiliza código de produtos. O editor não executa comandos de grammars do workspace.

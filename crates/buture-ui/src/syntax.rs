@@ -143,6 +143,84 @@ pub fn layout(text: &str, font: FontId, theme: &Theme) -> LayoutJob {
     }
     job
 }
+pub fn layout_parsed(
+    source: &str,
+    display: &str,
+    map: &[usize],
+    byte_start: usize,
+    parsed: Option<&buture_editor::parsing::Parsed>,
+    font: FontId,
+    theme: &Theme,
+) -> LayoutJob {
+    let Some(parsed) = parsed else {
+        return layout(display, font, theme);
+    };
+    let mut job = LayoutJob::default();
+    let mut at = 0;
+    let byte_end = byte_start + source.len();
+    let display_bytes: Vec<_> = display
+        .char_indices()
+        .map(|(b, _)| b)
+        .chain(std::iter::once(display.len()))
+        .collect();
+    let first = parsed.spans.partition_point(|s| s.bytes.end <= byte_start);
+    for span in parsed.spans[first..]
+        .iter()
+        .take_while(|s| s.bytes.start < byte_end)
+    {
+        let start = span.bytes.start.max(byte_start) - byte_start;
+        let end = span.bytes.end.min(byte_end) - byte_start;
+        let a = source[..start].chars().count();
+        let b = source[..end].chars().count();
+        let from = map.iter().position(|p| *p == a).unwrap_or(0);
+        let to = map.iter().rposition(|p| *p == b).unwrap_or(map.len() - 1);
+        let from = display_bytes[from].max(at);
+        let to = display_bytes[to].max(from);
+        if from > at {
+            job.append(
+                &display[at..from],
+                0.0,
+                TextFormat {
+                    font_id: font.clone(),
+                    color: theme.text.primary.into(),
+                    ..Default::default()
+                },
+            );
+        }
+        let kind = match span.kind {
+            buture_editor::parsing::Kind::Keyword => Kind::Keyword,
+            buture_editor::parsing::Kind::Function => Kind::Function,
+            buture_editor::parsing::Kind::Type => Kind::Type,
+            buture_editor::parsing::Kind::String => Kind::String,
+            buture_editor::parsing::Kind::Number => Kind::Number,
+            buture_editor::parsing::Kind::Comment => Kind::Comment,
+            buture_editor::parsing::Kind::Macro => Kind::Macro,
+        };
+        job.append(
+            &display[from..to],
+            0.0,
+            TextFormat {
+                font_id: font.clone(),
+                color: color(theme, kind).into(),
+                ..Default::default()
+            },
+        );
+        at = to;
+    }
+    if at < display.len() {
+        job.append(
+            &display[at..],
+            0.0,
+            TextFormat {
+                font_id: font,
+                color: theme.text.primary.into(),
+                ..Default::default()
+            },
+        );
+    }
+    job
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
