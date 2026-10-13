@@ -9,3 +9,4 @@ pub mod shell;
 pub use shell::IdeShell;
 
 pub mod explorer;
+pub mod onboarding;

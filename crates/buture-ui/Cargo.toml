@@ -15,3 +15,4 @@ workspace = true
 egui.workspace = true
 buture-settings = { path = "../buture-settings" }
 buture-workspace = { path = "../buture-workspace" }
+buture-toolchains = { path = "../buture-toolchains" }

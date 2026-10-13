@@ -91,6 +91,10 @@ pub struct IdeShell {
     message: String,
     preferences: Option<buture_settings::Preferences>,
     settings: buture_settings::Settings,
+    onboarding: crate::onboarding::Onboarding,
+    host: Option<buture_toolchains::Host>,
+    host_receiver: Option<std::sync::mpsc::Receiver<buture_toolchains::Host>>,
+    scan_summary: Option<String>,
 }
 
 impl IdeShell {
@@ -112,6 +116,10 @@ impl IdeShell {
             message: String::new(),
             preferences: None,
             settings: Default::default(),
+            onboarding: Default::default(),
+            host: None,
+            host_receiver: None,
+            scan_summary: None,
             theme,
             effects: VisualEffects::Full,
             show_inspector: true,
@@ -121,6 +129,11 @@ impl IdeShell {
 
     pub fn start_preferences(&mut self) {
         self.preferences = Some(buture_settings::Preferences::start());
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.host_receiver = Some(rx);
+        std::thread::spawn(move || {
+            let _ = tx.send(buture_toolchains::Host::detect());
+        });
     }
     fn save_preference(&self, key: &str, value: &str) {
         if let Some(p) = &self.preferences {
@@ -145,6 +158,11 @@ impl IdeShell {
             }
         }
 
+        if let Some(rx) = &self.host_receiver
+            && let Ok(host) = rx.try_recv()
+        {
+            self.host = Some(host);
+        }
         while let Ok(event) = self.workspace.events.try_recv() {
             match event {
                 buture_workspace::Event::Tree { root, entries } => {
@@ -177,6 +195,21 @@ impl IdeShell {
             self.open_folder = true;
         }
         self.workspace_dialogs(ctx);
+        if self.preferences.is_some()
+            && self.settings.get("Development.onboardingComplete") != Some("true")
+        {
+            egui::Window::new("First run").collapsible(false).resizable(false).default_width(460.0).anchor(Align2::CENTER_CENTER,[0.0,0.0]).show(ctx,|ui| {
+                if let Some(action)=self.onboarding.show(ui,self.host.as_ref(),self.scan_summary.as_deref()) {
+                    match action {
+                        crate::onboarding::Action::Scan=>{if let Some(h)=&self.host {self.scan_summary=Some(format!("{:?} · {:?}\n{} PATH directories\n{} SDK locations\nTool versions have not been scanned.",h.os,h.architecture,h.path.len(),h.sdk_directories.len()));}}
+                        crate::onboarding::Action::Complete=>{
+                            self.save_preference("Languages.selected",&self.onboarding.languages.join(","));
+                            self.save_preference("Development.onboardingComplete","true");
+                        }
+                    }
+                }
+            });
+        }
         let theme = self.theme;
         let mut layout = ShellLayout::calculate(
             ctx.content_rect(),
