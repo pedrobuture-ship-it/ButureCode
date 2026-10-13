@@ -10,3 +10,7 @@ description = "Buture Glass design system and native presentation."
 
 [lints]
 workspace = true
+
+[dependencies]
+egui.workspace = true
+buture-settings = { path = "../buture-settings" }

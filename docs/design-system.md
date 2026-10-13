@@ -25,3 +25,11 @@ Fonte única: `crates/buture-ui/src/theme.rs`. Os nomes públicos Rust usam snak
 | typography | caption, body, title, display, code |
 
 Cores armazenadas como RGBA, independentes do toolkit. Editor `#12171c`, texto primário `#e8eff0` e esmeralda `#64dcb0`. Espaçamento em pontos lógicos, durações em `Duration`. Os estados sem efeitos sempre preservam o fundo sólido do editor.
+
+## GlassSurface
+
+`GlassSurface` concentra composição e política visual. Variantes Subtle, Panel, Elevated, Floating e Modal; builders para blur, opacity, border, radius e shadow. `paint` serve a regiões de layout e `show` envolve componentes com padding consistente.
+
+Full usa um backdrop **interno à aplicação**, gerado com os tokens, e blur gaussiano separável em resolução 320×200. Cada raio é calculado uma vez e reutilizado como textura; nenhuma leitura de framebuffer por widget. Reduced limita blur a 4 e remove sombras; Off força alpha 255, blur 0 e ausência de sombra, inclusive sobre overrides. UVs usam o viewport global para evitar descontinuidades entre painéis.
+
+Não há captura do wallpaper ou blur de janelas do SO. Transparência nativa do desktop depende do compositor e não é requisito do shell; o vidro deste marco é composto dentro da janela. Texto e editor permanecem fora do pipeline de blur.

@@ -11,3 +11,5 @@ Avaliação realizada antes da UI:
 - **Tokio, Serde, Tree-sitter, ropey, notify, tracing, thiserror**: preferências para marcos que realmente precisem de async, persistência, parsing, buffers, watchers, logging e erros. Adicionar somente quando usados; nenhum pacote antecipado sem função neste ciclo.
 
 Fontes primárias: https://github.com/emilk/egui e https://docs.rs/eframe ; GPUI: https://github.com/zed-industries/zed/tree/main/crates/gpui . A licença do projeto não muda por usar dependências permissivas.
+
+Versões selecionadas: egui e eframe **0.33.3**, fixadas na mesma versão, compatíveis com o MSRV declarado 1.88. O toolkit mais novo não é necessário para este shell; upgrades exigem revisão de API, MSRV e renderização. egui entra no prompt 04, eframe somente no prompt 05. eframe usará OpenGL/Glow com X11 e Wayland para reduzir o conjunto de dependências do primeiro marco; sem WebView, persistência ou telemetria.
