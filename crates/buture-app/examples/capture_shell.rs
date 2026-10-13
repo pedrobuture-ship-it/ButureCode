@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 14] = [
+const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 15] = [
     ("full", VisualEffects::Full, [1440.0, 900.0], true, true),
     (
         "reduced",
@@ -36,6 +36,7 @@ const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 14] = [
     ("editor", VisualEffects::Full, [1440.0, 900.0], false, false),
     ("tabs", VisualEffects::Full, [1440.0, 900.0], false, false),
     ("split", VisualEffects::Full, [1440.0, 900.0], false, false),
+    ("search", VisualEffects::Full, [1440.0, 900.0], false, false),
     (
         "overview",
         VisualEffects::Full,
@@ -92,6 +93,7 @@ fn main() -> eframe::Result {
                 index: 0,
                 requested: false,
                 since_change: Instant::now(),
+                editing_only: std::env::args().nth(2).as_deref() == Some("editing"),
             }))
         }),
     )
@@ -103,6 +105,7 @@ struct Capture {
     index: usize,
     requested: bool,
     since_change: Instant,
+    editing_only: bool,
 }
 
 impl eframe::App for Capture {
@@ -159,6 +162,13 @@ impl eframe::App for Capture {
             }
             if CASES[self.index].0 == "split" {
                 self.shell.split_editor(false);
+            }
+            if self.editing_only && CASES[self.index].0 == "overview" {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
+            if CASES[self.index].0 == "search" {
+                self.shell.preview_search("pub");
             }
             if CASES[self.index].0 == "overview" {
                 self.shell.open_project_overview();

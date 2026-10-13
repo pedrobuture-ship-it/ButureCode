@@ -20,6 +20,7 @@ impl Selection {
         self.anchor == self.head
     }
 }
+type PendingMatch = (Range<usize>, Option<(u64, u64)>);
 type BracketCache = ((u64, usize, bool), Option<(usize, usize)>);
 #[derive(Default)]
 pub struct View {
@@ -67,6 +68,7 @@ pub struct EditorSpace {
     opening_groups: BTreeMap<PathBuf, Vec<(usize, bool)>>,
     restored_active: BTreeMap<usize, PathBuf>,
     close_owners: BTreeMap<usize, usize>,
+    pending_matches: BTreeMap<PathBuf, PendingMatch>,
 }
 impl Default for EditorSpace {
     fn default() -> Self {
@@ -90,6 +92,7 @@ impl Default for EditorSpace {
             opening_groups: BTreeMap::new(),
             restored_active: BTreeMap::new(),
             close_owners: BTreeMap::new(),
+            pending_matches: BTreeMap::new(),
         }
     }
 }
@@ -403,6 +406,8 @@ impl EditorSpace {
                     };
                     if index == self.documents.len() {
                         self.documents.push(document);
+                    } else if self.documents[index].buffer.dirty() {
+                        message = Some("Reload skipped: this document has unsaved changes".into());
                     } else {
                         self.documents[index] = document;
                     }
@@ -423,6 +428,12 @@ impl EditorSpace {
                         }
                     }
                     self.active = index;
+                    if let Some(path) = self.documents[index].buffer.path.clone()
+                        && let Some((bytes, stamp)) = self.pending_matches.remove(&path)
+                        && let Err(error) = self.select_match(index, bytes, stamp)
+                    {
+                        message = Some(error.to_string());
+                    }
                     self.persist();
                 }
                 FileEvent::Saved(saved) => {
@@ -683,6 +694,100 @@ impl EditorSpace {
         execute(&mut document.buffer, view, command, parsed)
             .err()
             .map(|e| e.to_string())
+    }
+    pub fn active_snapshot(&self) -> Option<buture_editor::TextSnapshot> {
+        let index = self.groups[self.group_active].active?;
+        Some(self.documents[index].buffer.snapshot())
+    }
+    pub fn dirty_paths(&self) -> Vec<PathBuf> {
+        self.documents
+            .iter()
+            .filter(|d| d.buffer.dirty())
+            .filter_map(|d| d.buffer.path.clone())
+            .collect()
+    }
+    pub fn apply_snapshot_edits(
+        &mut self,
+        snapshot: &buture_editor::TextSnapshot,
+        edits: &[buture_editor::Edit],
+    ) -> Option<String> {
+        let Some(index) = self
+            .documents
+            .iter()
+            .position(|d| d.buffer.path.as_ref() == Some(&snapshot.path))
+        else {
+            return Some("Document is no longer open".into());
+        };
+        let buffer = &mut self.documents[index].buffer;
+        if buffer.revision != snapshot.revision || buffer.content_id() != snapshot.content_id {
+            return Some("Document changed while replacements were prepared; search again".into());
+        }
+        buffer.apply_edits(edits).err().map(|e| e.to_string())
+    }
+    fn select_match(
+        &mut self,
+        index: usize,
+        bytes: Range<usize>,
+        stamp: Option<(u64, u64)>,
+    ) -> Result<(), EditorError> {
+        let buffer = &self.documents[index].buffer;
+        if stamp
+            .is_some_and(|(revision, id)| revision != buffer.revision || id != buffer.content_id())
+        {
+            return Err(EditorError::StaleSnapshot);
+        }
+        if stamp.is_none() && buffer.dirty() {
+            return Err(EditorError::StaleSnapshot);
+        }
+        let start = buffer.byte_to_char(bytes.start)?;
+        let end = buffer.byte_to_char(bytes.end)?;
+        let view = self.groups[self.group_active]
+            .views
+            .entry(index)
+            .or_default();
+        view.selection = Selection {
+            anchor: start,
+            head: end,
+        };
+        view.additional.clear();
+        view.follow_caret = true;
+        Ok(())
+    }
+    pub fn open_match(
+        &mut self,
+        root: PathBuf,
+        path: PathBuf,
+        bytes: Range<usize>,
+        stamp: Option<(u64, u64)>,
+    ) -> Option<String> {
+        self.open(root, path.clone());
+        if let Some(index) = self
+            .documents
+            .iter()
+            .position(|d| d.buffer.path.as_ref() == Some(&path))
+            && self.groups[self.group_active].tabs.contains(&index)
+        {
+            self.select_match(index, bytes, stamp)
+                .err()
+                .map(|e| e.to_string())
+        } else {
+            self.pending_matches.insert(path, (bytes, stamp));
+            None
+        }
+    }
+    pub fn reload_clean(&mut self, paths: &[PathBuf]) {
+        if let Some(root) = &self.workspace {
+            for path in paths {
+                if self
+                    .documents
+                    .iter()
+                    .any(|d| d.buffer.path.as_ref() == Some(path) && !d.buffer.dirty())
+                    && self.loading.insert(path.clone())
+                {
+                    self.files.open(root.clone(), path.clone());
+                }
+            }
+        }
     }
     pub fn active_path(&self) -> Option<&Path> {
         self.documents.get(self.active)?.buffer.path.as_deref()

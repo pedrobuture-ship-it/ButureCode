@@ -90,6 +90,7 @@ pub struct IdeShell {
     file_name: String,
     preview: Option<(std::path::PathBuf, String, Vec<usize>)>,
     editors: crate::editor::EditorSpace,
+    search: crate::search::SearchPanel,
     message: String,
     preferences: Option<buture_settings::Preferences>,
     preferences_loaded: bool,
@@ -143,6 +144,7 @@ impl IdeShell {
             file_name: String::new(),
             preview: None,
             editors: Default::default(),
+            search: Default::default(),
             message: String::new(),
             preferences: None,
             preferences_loaded: false,
@@ -217,6 +219,17 @@ impl IdeShell {
             self.active = 0;
         }
     }
+    pub fn preview_search(&mut self, query: &str) {
+        self.search.text = query.into();
+        self.open_search(true);
+    }
+    pub fn open_search(&mut self, workspace: bool) {
+        self.active = 1;
+        self.show_doctor = false;
+        self.show_project = false;
+        self.show_toolchains = false;
+        self.search.open(workspace);
+    }
     pub fn open_doctor(&mut self) {
         self.show_project = false;
         self.show_doctor = true;
@@ -289,6 +302,7 @@ impl IdeShell {
             || self.doctor_scan.is_some()
             || self.project_scan.is_some()
             || !self.editors.loading.is_empty()
+            || self.search.busy()
     }
     /// Preview first run without reading or writing personal preferences.
     pub fn preview_onboarding(&mut self) {
@@ -320,6 +334,10 @@ impl IdeShell {
         }
     }
     pub fn show(&mut self, ctx: &Context) {
+        if let Some(message) = self.search.poll(&mut self.editors) {
+            self.message = message;
+        }
+        self.search.review(ctx, &self.editors);
         if let Some(error) = self.editors.poll() {
             self.message = error;
         }
@@ -442,6 +460,16 @@ impl IdeShell {
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::O)) {
             self.open_folder = true;
+        }
+        if ctx.input_mut(|i| {
+            i.consume_key(
+                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                egui::Key::F,
+            )
+        }) {
+            self.open_search(true);
+        } else if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
+            self.open_search(false);
         }
         self.workspace_dialogs(ctx);
         self.install_dialogs(ctx);
@@ -649,7 +677,11 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                     sidebar(&mut side, &theme, self.active);
                 }
                 let mut center = region(ui, "editor", layout.editor.shrink(theme.spacing.md));
-                if self.show_project {
+                if self.active==1 {
+                    if let Some(selected)=self.search.show(&mut center,&theme,self.root.as_ref(),&self.editors) && let Some(root)=&self.root {
+                        if let Some(error)=self.editors.open_match(root.clone(),selected.hit.path,selected.hit.bytes,selected.stamp){self.message=error;}self.active=0;
+                    }
+                } else if self.show_project {
                     if let Some(action)=crate::overview::show(&mut center,self.root.as_deref(),self.project.as_ref(),self.branch.as_deref(),self.project_scan.is_some()){
                         match action{crate::overview::Action::Doctor=>self.open_doctor(),crate::overview::Action::Toolchains=>self.open_toolchain_manager(),crate::overview::Action::Open(path)=>self.open_file(path),}
                     }

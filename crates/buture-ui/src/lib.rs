@@ -13,5 +13,6 @@ pub mod editor;
 pub mod explorer;
 pub mod onboarding;
 pub mod overview;
+pub mod search;
 pub mod syntax;
 pub mod toolchains;

@@ -546,6 +546,11 @@ version = "0.1.0"
 [[package]]
 name = "buture-search"
 version = "0.1.0"
+dependencies = [
+ "buture-editor",
+ "ignore",
+ "regex",
+]
 
 [[package]]
 name = "buture-settings"
@@ -570,6 +575,7 @@ dependencies = [
  "buture-doctor",
  "buture-editor",
  "buture-project",
+ "buture-search",
  "buture-settings",
  "buture-toolchains",
  "buture-workspace",

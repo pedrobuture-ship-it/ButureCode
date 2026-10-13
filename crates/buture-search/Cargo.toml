@@ -6,7 +6,12 @@ rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "Future streaming project search."
+description = "Cancellable streaming search and reviewed replacements."
 
 [lints]
 workspace = true
+
+[dependencies]
+regex = "=1.13.1"
+ignore = "=0.4.33"
+buture-editor = { path = "../buture-editor" }

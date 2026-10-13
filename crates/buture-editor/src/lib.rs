@@ -20,6 +20,7 @@ pub enum EditorError {
     OutsideWorkspace,
     Conflict(PathBuf),
     NoPath,
+    StaleSnapshot,
 }
 impl std::fmt::Display for EditorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -37,6 +38,10 @@ impl std::fmt::Display for EditorError {
                 p.display()
             ),
             Self::NoPath => write!(f, "Choose a path before saving"),
+            Self::StaleSnapshot => write!(
+                f,
+                "Document changed since this operation was prepared; search again"
+            ),
         }
     }
 }
