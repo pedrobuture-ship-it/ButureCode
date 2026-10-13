@@ -15,9 +15,9 @@ fn main() -> eframe::Result {
         buture_core::APP_NAME,
         options,
         Box::new(|creation| {
-            Ok(Box::new(ButureApp {
-                shell: buture_ui::IdeShell::new(&creation.egui_ctx),
-            }))
+            let mut shell = buture_ui::IdeShell::new(&creation.egui_ctx);
+            shell.start_preferences();
+            Ok(Box::new(ButureApp { shell }))
         }),
     )
 }

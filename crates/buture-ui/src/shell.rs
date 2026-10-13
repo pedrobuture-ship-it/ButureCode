@@ -89,6 +89,8 @@ pub struct IdeShell {
     file_name: String,
     preview: Option<(std::path::PathBuf, String)>,
     message: String,
+    preferences: Option<buture_settings::Preferences>,
+    settings: buture_settings::Settings,
 }
 
 impl IdeShell {
@@ -108,6 +110,8 @@ impl IdeShell {
             file_name: String::new(),
             preview: None,
             message: String::new(),
+            preferences: None,
+            settings: Default::default(),
             theme,
             effects: VisualEffects::Full,
             show_inspector: true,
@@ -115,10 +119,42 @@ impl IdeShell {
         }
     }
 
+    pub fn start_preferences(&mut self) {
+        self.preferences = Some(buture_settings::Preferences::start());
+    }
+    fn save_preference(&self, key: &str, value: &str) {
+        if let Some(p) = &self.preferences {
+            let _ = p.requests.send(buture_settings::Request::SetUser {
+                key: key.into(),
+                value: value.into(),
+            });
+        }
+    }
     pub fn show(&mut self, ctx: &Context) {
+        if let Some(p) = &self.preferences {
+            while let Ok(result) = p.events.try_recv() {
+                match result {
+                    Ok(settings) => {
+                        self.effects = settings.effects();
+                        self.show_inspector = settings.get("Appearance.inspector") == Some("true");
+                        self.show_bottom_panel = settings.get("Appearance.panel") == Some("true");
+                        self.settings = settings;
+                    }
+                    Err(e) => self.message = e.to_string(),
+                }
+            }
+        }
+
         while let Ok(event) = self.workspace.events.try_recv() {
             match event {
                 buture_workspace::Event::Tree { root, entries } => {
+                    if self.root.as_ref() != Some(&root)
+                        && let Some(p) = &self.preferences
+                    {
+                        let _ = p
+                            .requests
+                            .send(buture_settings::Request::LoadWorkspace(root.clone()));
+                    }
                     self.root = Some(root);
                     self.explorer.rows = entries
                         .into_iter()
@@ -265,6 +301,33 @@ impl IdeShell {
                             }
                         }
                     }
+                } else if self.active == 7 {
+                    side.heading("Settings");
+                    egui::ScrollArea::vertical().show(&mut side, |ui| {
+                        for category in buture_settings::CATEGORIES {
+                            ui.collapsing(category, |ui| {
+                                if category == "Appearance" {
+                                    for effects in VisualEffects::ALL {
+                                        if ui
+                                            .selectable_value(
+                                                &mut self.effects,
+                                                effects,
+                                                effects.label(),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.save_preference(
+                                                "Appearance.effects",
+                                                effects.label(),
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    ui.label("Preferences will be added with this feature.");
+                                }
+                            });
+                        }
+                    });
                 } else {
                     sidebar(&mut side, &theme, self.active);
                 }
@@ -437,7 +500,7 @@ impl IdeShell {
                 }
                 ui.separator();
                 ui.add_enabled(false, Button::new("Profile"));
-                ui.label("Git: no repository");
+                ui.label("Git: not scanned");
                 ui.toggle_value(&mut self.show_inspector, "Inspector")
                     .on_hover_text("Toggle right inspector");
                 ui.toggle_value(&mut self.show_bottom_panel, "Panel")
