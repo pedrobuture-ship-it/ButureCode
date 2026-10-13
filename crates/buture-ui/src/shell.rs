@@ -78,6 +78,7 @@ pub struct IdeShell {
     pub show_inspector: bool,
     pub show_bottom_panel: bool,
     backdrop: Backdrop,
+    active: usize,
 }
 
 impl IdeShell {
@@ -86,6 +87,7 @@ impl IdeShell {
         configure(ctx, &theme);
         Self {
             backdrop: Backdrop::new(ctx, &theme),
+            active: 0,
             theme,
             effects: VisualEffects::Full,
             show_inspector: true,
@@ -165,10 +167,12 @@ impl IdeShell {
                             .shrink2(vec2(theme.spacing.sm, theme.spacing.md)),
                     ),
                     &theme,
+                    &mut self.active,
                 );
                 sidebar(
                     &mut region(ui, "sidebar", layout.sidebar.shrink(theme.spacing.lg)),
                     &theme,
+                    self.active,
                 );
                 editor(&mut region(ui, "editor", layout.editor), &theme);
                 if let Some(rect) = layout.inspector {
@@ -410,7 +414,7 @@ fn mark(ui: &mut Ui, size: f32, theme: &Theme) {
     );
 }
 
-fn activity_bar(ui: &mut Ui, theme: &Theme) {
+fn activity_bar(ui: &mut Ui, theme: &Theme, active: &mut usize) {
     for (index, (icon, label)) in [
         (Icon::Folder, "Explorer"),
         (Icon::Search, "Search"),
@@ -424,9 +428,20 @@ fn activity_bar(ui: &mut Ui, theme: &Theme) {
     .enumerate()
     {
         let (rect, response) =
-            ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::hover());
+            ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::click());
+        if response.clicked() {
+            *active = index;
+        }
+        let hovered = response.hovered();
         response.on_hover_text(label);
-        let selected = index == 0;
+        let selected = index == *active;
+        if hovered && !selected {
+            ui.painter().rect_filled(
+                rect,
+                theme.radius.small,
+                Color32::from(theme.surface.elevated),
+            );
+        }
         if selected {
             ui.painter().rect(
                 rect,
@@ -448,7 +463,10 @@ fn activity_bar(ui: &mut Ui, theme: &Theme) {
     }
     ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
         let (rect, response) =
-            ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::hover());
+            ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+        if response.clicked() {
+            *active = 7;
+        }
         response.on_hover_text("Settings");
         Icon::Settings.paint(
             ui.painter(),
@@ -457,7 +475,23 @@ fn activity_bar(ui: &mut Ui, theme: &Theme) {
         );
     });
 }
-fn sidebar(ui: &mut Ui, theme: &Theme) {
+fn sidebar(ui: &mut Ui, theme: &Theme, active: usize) {
+    let title = [
+        "Explorer",
+        "Search",
+        "Source Control",
+        "Run & Debug",
+        "Database",
+        "Docker",
+        "Hardware",
+        "Settings",
+    ][active];
+    if active != 0 {
+        ui.heading(title);
+        ui.separator();
+        ui.label("This workspace will be implemented in its dedicated milestone.");
+        return;
+    }
     ui.horizontal(|ui| {
         ui.label(RichText::new("Explorer").strong().color(theme.text.primary));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
