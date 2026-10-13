@@ -20,7 +20,9 @@ impl Availability {
         match action {
             Action::Unavailable(reason) => Some(reason),
             Action::QuickOpen if !self.quick_open => Some("File navigation is not available yet"),
-            Action::SearchWorkspace if !self.workspace => Some("Open a folder first"),
+            Action::SearchWorkspace | Action::QuickOpen if !self.workspace => {
+                Some("Open a folder first")
+            }
             _ if scope == Scope::Editor && !self.editor => Some("Open a text document first"),
             _ => None,
         }

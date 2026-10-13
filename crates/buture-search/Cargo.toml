@@ -15,3 +15,4 @@ workspace = true
 regex = "=1.13.1"
 ignore = "=0.4.33"
 buture-editor = { path = "../buture-editor" }
+buture-core = { path = "../buture-core" }

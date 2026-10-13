@@ -92,6 +92,7 @@ pub struct IdeShell {
     editors: crate::editor::EditorSpace,
     search: crate::search::SearchPanel,
     palette: crate::palette::Palette,
+    quick_open: crate::quick_open::QuickOpen,
     commands: buture_core::commands::CommandRegistry,
     open_file_dialog: bool,
     file_input: String,
@@ -151,6 +152,7 @@ impl IdeShell {
             editors: Default::default(),
             search: Default::default(),
             palette: Default::default(),
+            quick_open: Default::default(),
             commands: buture_core::commands::CommandRegistry::standard(),
             open_file_dialog: false,
             file_input: String::new(),
@@ -220,7 +222,16 @@ impl IdeShell {
             buture_editor::session::Orientation::Horizontal
         });
     }
+    pub fn open_quick_open(&mut self) {
+        self.palette.open = false;
+        self.quick_open.activate(self.root.clone());
+    }
+    pub fn preview_quick_open(&mut self, query: &str) {
+        self.open_quick_open();
+        self.quick_open.set_query(query);
+    }
     pub fn open_palette(&mut self) {
+        self.quick_open.open = false;
         self.palette.activate();
     }
     fn open_path(&mut self, mut path: std::path::PathBuf) {
@@ -243,7 +254,7 @@ impl IdeShell {
         crate::palette::Availability {
             workspace: self.root.is_some(),
             editor: self.editors.active_snapshot().is_some(),
-            quick_open: false,
+            quick_open: true,
         }
     }
     fn dispatch(&mut self, action: buture_core::commands::Action) {
@@ -270,7 +281,7 @@ impl IdeShell {
             Action::SearchDocument => self.open_search(false),
             Action::SearchWorkspace => self.open_search(true),
             Action::Palette => self.open_palette(),
-            Action::QuickOpen => self.message = "File navigation is not available yet".into(),
+            Action::QuickOpen => self.open_quick_open(),
             Action::TogglePanel => {
                 self.show_bottom_panel = !self.show_bottom_panel;
                 self.save_preference(
@@ -317,6 +328,29 @@ impl IdeShell {
                 }
             }
             Action::Unavailable(reason) => self.message = reason.into(),
+        }
+    }
+    fn quick_picker(&mut self, ctx: &Context) {
+        if !self.quick_open.open {
+            return;
+        }
+        let path = egui::Window::new("Quick Open")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .frame(egui::Frame::NONE)
+            .anchor(Align2::CENTER_TOP, [0.0, 90.0])
+            .show(ctx, |ui| {
+                GlassSurface::new(GlassVariant::Floating)
+                    .show(ui, &self.theme, self.effects, &mut self.backdrop, |ui| {
+                        self.quick_open.show(ui, &self.theme)
+                    })
+                    .inner
+            })
+            .and_then(|r| r.inner)
+            .flatten();
+        if let Some(path) = path {
+            self.open_file(path);
         }
     }
     fn command_palette(&mut self, ctx: &Context) {
@@ -437,6 +471,7 @@ impl IdeShell {
             || self.project_scan.is_some()
             || !self.editors.loading.is_empty()
             || self.search.busy()
+            || self.quick_open.busy()
     }
     /// Preview first run without reading or writing personal preferences.
     pub fn preview_onboarding(&mut self) {
@@ -617,7 +652,11 @@ impl IdeShell {
         {
             self.open_palette();
         }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::P)) {
+            self.open_quick_open();
+        }
         self.command_palette(ctx);
+        self.quick_picker(ctx);
         self.workspace_dialogs(ctx);
         self.install_dialogs(ctx);
         if self.preview_first_run

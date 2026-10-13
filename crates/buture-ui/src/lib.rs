@@ -14,6 +14,7 @@ pub mod explorer;
 pub mod onboarding;
 pub mod overview;
 pub mod palette;
+pub mod quick_open;
 pub mod search;
 pub mod syntax;
 pub mod toolchains;
