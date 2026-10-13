@@ -95,6 +95,9 @@ pub struct IdeShell {
     host: Option<buture_toolchains::Host>,
     host_receiver: Option<std::sync::mpsc::Receiver<buture_toolchains::Host>>,
     scan_summary: Option<String>,
+    scan: Option<buture_toolchains::engine::Scan>,
+    reports: Vec<buture_toolchains::engine::Toolchain>,
+    show_toolchains: bool,
 }
 
 impl IdeShell {
@@ -120,6 +123,9 @@ impl IdeShell {
             host: None,
             host_receiver: None,
             scan_summary: None,
+            scan: None,
+            reports: Vec::new(),
+            show_toolchains: false,
             theme,
             effects: VisualEffects::Full,
             show_inspector: true,
@@ -143,7 +149,37 @@ impl IdeShell {
             });
         }
     }
+    fn start_scan(&mut self, languages: Vec<String>) {
+        if self.scan.is_none()
+            && let Some(host) = &self.host
+        {
+            self.reports.clear();
+            self.scan_summary = None;
+            self.onboarding.scanned = false;
+            self.scan = Some(buture_toolchains::engine::Scan::start(
+                host.clone(),
+                languages,
+            ));
+        }
+    }
     pub fn show(&mut self, ctx: &Context) {
+        let mut complete = false;
+        if let Some(scan) = &self.scan {
+            while let Ok(event) = scan.events.try_recv() {
+                match event {
+                    buture_toolchains::engine::ScanEvent::Result(report) => {
+                        self.reports.push(report)
+                    }
+                    buture_toolchains::engine::ScanEvent::Complete => complete = true,
+                }
+            }
+        }
+        if complete {
+            self.scan = None;
+            self.reports.sort_by(|a, b| a.language.cmp(&b.language));
+            self.scan_summary = Some(crate::toolchains::summary(&self.reports));
+        }
+
         if let Some(p) = &self.preferences {
             while let Ok(result) = p.events.try_recv() {
                 match result {
@@ -198,17 +234,30 @@ impl IdeShell {
         if self.preferences.is_some()
             && self.settings.get("Development.onboardingComplete") != Some("true")
         {
-            egui::Window::new("First run").collapsible(false).resizable(false).default_width(460.0).anchor(Align2::CENTER_CENTER,[0.0,0.0]).show(ctx,|ui| {
-                if let Some(action)=self.onboarding.show(ui,self.host.as_ref(),self.scan_summary.as_deref()) {
-                    match action {
-                        crate::onboarding::Action::Scan=>{if let Some(h)=&self.host {self.scan_summary=Some(format!("{:?} · {:?}\n{} PATH directories\n{} SDK locations\nTool versions have not been scanned.",h.os,h.architecture,h.path.len(),h.sdk_directories.len()));}}
-                        crate::onboarding::Action::Complete=>{
-                            self.save_preference("Languages.selected",&self.onboarding.languages.join(","));
-                            self.save_preference("Development.onboardingComplete","true");
+            egui::Window::new("First run")
+                .collapsible(false)
+                .resizable(false)
+                .default_width(460.0)
+                .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    if let Some(action) =
+                        self.onboarding
+                            .show(ui, self.host.as_ref(), self.scan_summary.as_deref())
+                    {
+                        match action {
+                            crate::onboarding::Action::Scan => {
+                                self.start_scan(self.onboarding.languages.clone());
+                            }
+                            crate::onboarding::Action::Complete => {
+                                self.save_preference(
+                                    "Languages.selected",
+                                    &self.onboarding.languages.join(","),
+                                );
+                                self.save_preference("Development.onboardingComplete", "true");
+                            }
                         }
                     }
-                }
-            });
+                });
         }
         let theme = self.theme;
         let mut layout = ShellLayout::calculate(
@@ -355,6 +404,10 @@ impl IdeShell {
                                             );
                                         }
                                     }
+                                } else if category == "Development" || category == "Toolchains" {
+                                    if ui.button("Toolchains").clicked() {
+                                        self.show_toolchains = true;
+                                    }
                                 } else {
                                     ui.label("Preferences will be added with this feature.");
                                 }
@@ -365,7 +418,11 @@ impl IdeShell {
                     sidebar(&mut side, &theme, self.active);
                 }
                 let mut center = region(ui, "editor", layout.editor.shrink(theme.spacing.md));
-                if let Some((path, text)) = &self.preview {
+                if self.active == 7 && self.show_toolchains {
+                    if crate::toolchains::show(&mut center, &self.reports, self.scan.is_some()) {
+                        self.start_scan(Vec::new());
+                    }
+                } else if let Some((path, text)) = &self.preview {
                     center.label(path.display().to_string());
                     center.label("Read-only preview · editing belongs to prompt 25");
                     center.separator();

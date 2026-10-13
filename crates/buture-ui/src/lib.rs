@@ -10,3 +10,4 @@ pub use shell::IdeShell;
 
 pub mod explorer;
 pub mod onboarding;
+pub mod toolchains;

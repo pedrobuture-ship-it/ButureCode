@@ -53,7 +53,7 @@ pub struct Toolchain {
     pub tools: Vec<Tool>,
     pub environments: Vec<PathBuf>,
 }
-pub trait ToolchainProvider {
+pub trait ToolchainProvider: Send {
     fn language(&self) -> &'static str;
     fn specifications(&self) -> Vec<ToolSpec>;
     fn extra_directories(&self, _host: &Host) -> Vec<PathBuf> {
@@ -224,6 +224,46 @@ pub fn child_bins(root: PathBuf) -> Vec<PathBuf> {
         .take(64)
         .collect()
 }
+#[derive(Debug)]
+pub enum ScanEvent {
+    Result(Toolchain),
+    Complete,
+}
+pub struct Scan {
+    pub events: mpsc::Receiver<ScanEvent>,
+}
+impl Scan {
+    pub fn start(host: Host, languages: Vec<String>) -> Self {
+        let (tx, events) = mpsc::channel();
+        thread::spawn(move || {
+            let mut workers = Vec::new();
+            for provider in crate::providers::registry() {
+                let selected = languages.is_empty()
+                    || languages.iter().any(|l| {
+                        l == provider.language()
+                            || (provider.language() == "C/C++"
+                                && ["C", "C++"].contains(&l.as_str()))
+                            || (provider.language() == "Node.js" && l == "TypeScript")
+                    });
+                if !selected {
+                    continue;
+                }
+                let tx = tx.clone();
+                let host = host.clone();
+                workers.push(thread::spawn(move || {
+                    let result = provider.detect(&host);
+                    let _ = tx.send(ScanEvent::Result(result));
+                }));
+            }
+            for worker in workers {
+                let _ = worker.join();
+            }
+            let _ = tx.send(ScanEvent::Complete);
+        });
+        Self { events }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
