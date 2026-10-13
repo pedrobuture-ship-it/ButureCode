@@ -404,7 +404,7 @@ pub fn render(
             let (display, map) = expand_tabs(source);
             let galley =
                 ui.painter()
-                    .layout_no_wrap(display, font.clone(), theme.text.primary.into());
+                    .layout_job(crate::syntax::layout(&display, font.clone(), theme));
             let (rect, response) = ui.allocate_exact_size(
                 vec2(ui.available_width(), row_height),
                 Sense::click_and_drag(),

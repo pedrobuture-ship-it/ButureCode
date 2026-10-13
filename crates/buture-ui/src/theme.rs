@@ -113,6 +113,16 @@ pub struct Typography {
     pub code: f32,
 }
 #[derive(Debug, Clone, Copy)]
+pub struct Syntax {
+    pub keyword: Color,
+    pub function: Color,
+    pub types: Color,
+    pub string: Color,
+    pub number: Color,
+    pub comment: Color,
+    pub macros: Color,
+}
+#[derive(Debug, Clone, Copy)]
 pub struct Theme {
     pub background: Background,
     pub surface: Surface,
@@ -127,11 +137,21 @@ pub struct Theme {
     pub blur: Blur,
     pub motion: Motion,
     pub typography: Typography,
+    pub syntax: Syntax,
 }
 
 impl Theme {
     pub const fn dark() -> Self {
         Self {
+            syntax: Syntax {
+                keyword: Color::rgb(185, 160, 221),
+                function: Color::rgb(134, 180, 216),
+                types: Color::rgb(136, 197, 201),
+                string: Color::rgb(155, 194, 163),
+                number: Color::rgb(204, 190, 143),
+                comment: Color::rgb(112, 138, 127),
+                macros: Color::rgb(190, 151, 185),
+            },
             background: Background {
                 base: Color::rgb(20, 25, 29),
                 deep: Color::rgb(12, 17, 21),
