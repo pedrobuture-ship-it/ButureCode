@@ -11,7 +11,7 @@
 
 ## Escopo atual
 
-Este ciclo foi ampliado por Pedro Buture até o **prompt 20**. Consulte `Buture Code — Prompts completos do zero.md`. Implementar em sequência, com commits pequenos e validação. Após a instalação assistida, parar e aguardar novas ordens; não antecipar os prompts 21–95.
+Este ciclo foi ampliado por Pedro Buture até o **prompt 35**. Consulte `Buture Code — Prompts completos do zero.md`. Implementar em sequência, com commits pequenos e validação. Revisar os marcos 24 e 35. Após keybindings, parar e aguardar novas ordens; não antecipar os prompts 36–95.
 
 ## Implementação
 

@@ -6,7 +6,10 @@ rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "Future development environment diagnostics."
+description = "Observed development environment diagnostics and safe repair suggestions."
 
 [lints]
 workspace = true
+
+[dependencies]
+buture-toolchains = { path = "../buture-toolchains" }

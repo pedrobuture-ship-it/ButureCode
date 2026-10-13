@@ -470,6 +470,9 @@ version = "0.1.0"
 [[package]]
 name = "buture-doctor"
 version = "0.1.0"
+dependencies = [
+ "buture-toolchains",
+]
 
 [[package]]
 name = "buture-editor"
