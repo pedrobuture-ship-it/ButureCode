@@ -19,3 +19,5 @@ Windows/macOS não compilados ou executados. Suporte de gerenciadores e executá
 Explorer usa polling em dois segundos e preview UTF-8 limitado a 1 MiB; sem edição, undo ou PTY. Cópias podem ser parciais após falha de IO. A segurança de caminhos não isola um filesystem hostil com corridas concorrentes. Command Center permanece visual; profile e áreas posteriores são placeholders explícitos. Branch é lida de `.git/HEAD`, sem operações Git ou suporte completo a worktrees. Settings aceita apenas o schema implementado, com categorias futuras reservadas. Não foram medidos números de performance nem consumo de idle.
 
 O ciclo termina aqui. Não implementar prompt 21 sem novas instruções.
+
+Este documento registra o marco histórico 20. O ciclo posterior autorizado por Pedro Buture foi concluído até o [marco 35](milestone-35.md).

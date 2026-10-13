@@ -12,17 +12,19 @@ Requer Rust stable e ambiente gráfico. No Linux, o backend usa OpenGL/EGL, X11 
 cargo run -p buture-app
 ```
 
-## Marco atual — prompts 01–20
+## Marco atual — prompts 01–35
 
-Buture Glass Dark com tokens e GlassSurface centralizados, modos Full / Reduced / Off, janela nativa, activity navigation e sidebar redimensionável.
+Buture Glass Dark com tokens e GlassSurface centralizados, modos Full / Reduced / Off e editor em superfície sólida. Doctor apresenta evidências e soluções; Project Overview detecta manifests e monorepos sem executar scripts.
 
-Explorer real: Open Folder (Ctrl/Cmd+O), pastas sob demanda, watcher por polling, navegação por teclado, seleção, menu contextual e operações de arquivos. Clique expande pastas; duplo clique ou Enter abre preview UTF-8 somente leitura, limitado a 1 MiB. Exclusão permanente exige confirmação. Não há editor editável neste ciclo.
+Editor nativo com buffer Rope UTF-8, undo/redo, edição, salvamento com proteção contra mudanças externas, tabs/pins/preview, splits e sessão de layout. Tree-sitter fornece syntax highlighting e folding em segundo plano. Edição inclui multicursor, ocorrências, indentação, comentários, pares automáticos, duplicação e movimentação de linhas.
 
-Settings usa camadas Default/User/Workspace em INI legível. O onboarding detecta o host, oferece seleção de linguagens, executa varredura em segundo plano e salva a conclusão. Settings → Development → Toolchains apresenta versões e locais observados de Rust, C/C++, Python, Java, Node.js e Go. Para ferramentas ausentes com método suportado, Install mostra explicação e comando exato, pede confirmação na aplicação e valida o resultado.
+Busca em documento/workspace com regex, case/whole word, globs e substituição revisada. Command Palette e Quick Open usam busca fuzzy. Atalhos têm defaults por SO, overrides pessoais, conflitos e chords de duas teclas. Settings → Keyboard Shortcuts abre o perfil.
 
-Command Center e Profile ainda são placeholders visuais. Áreas de ferramentas posteriores indicam que não estão implementadas. O painel Output não é um terminal. Doctor, LSP, edição, Git completo e demais integrações pertencem aos próximos prompts.
+Open Folder: Ctrl/Cmd+O; Open File: Ctrl/Cmd+Shift+O; Quick Open: Ctrl/Cmd+P; Palette: Ctrl/Cmd+Shift+P. Toolchains e instalação assistida mantêm revisão e confirmação explícitas.
 
-O ciclo autorizado termina no prompt 20. [Resultados e limitações](docs/milestone-20.md).
+O ciclo termina no prompt **35**. Terminal PTY, execução de projetos/tasks, integração Git completa e LSP pertencem às próximas etapas. O painel Output apresenta mensagens da aplicação. Build/Test do projeto não executados aparecem como tal.
+
+[Resultados e limitações do marco 35](docs/milestone-35.md). [Marco 20 histórico](docs/milestone-20.md).
 
 ## Verificação
 
@@ -34,12 +36,17 @@ cargo build --workspace
 cargo run -p buture-app --example capture_shell -- /tmp/buture-shell-preview
 ```
 
-O exemplo abre uma janela nativa, captura os modos de efeitos e os fluxos Explorer, Toolchains e onboarding, e encerra. A varredura de QA consulta versões reais; não instala ferramentas nem grava preferências pessoais. A geometria é determinada pelo compositor.
+O exemplo abre uma janela nativa, captura os modos de efeitos, editor, splits, busca, Palette, Quick Open, shortcuts, Doctor, Toolchains e onboarding, e encerra. A varredura de QA consulta versões reais; não instala ferramentas nem grava preferências pessoais. A geometria é determinada pelo compositor.
 
 - [Arquitetura](docs/architecture.md)
 - [Roadmap](docs/roadmap.md)
 - [Design system](docs/design-system.md)
 - [Toolchains e instalação assistida](docs/toolchains.md)
+- [Editor](docs/editor.md)
+- [Atalhos](docs/keybindings.md)
+- [Doctor](docs/doctor.md)
+- [Projetos](docs/project.md)
+- [Performance](docs/performance.md)
 - [Segurança](docs/security.md)
 - [Dependências](docs/dependencies.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
