@@ -57,6 +57,7 @@ pub struct EditorSpace {
     pub files: Files,
     parsing: buture_editor::parsing::Service,
     pub saving: BTreeSet<PathBuf>,
+    recent_saves: Vec<buture_editor::TextSnapshot>,
     pub loading: BTreeSet<PathBuf>,
     preview_requests: BTreeSet<PathBuf>,
     focus_requests: BTreeSet<PathBuf>,
@@ -82,6 +83,7 @@ impl Default for EditorSpace {
             files: Files::default(),
             parsing: Default::default(),
             saving: BTreeSet::new(),
+            recent_saves: Vec::new(),
             loading: BTreeSet::new(),
             preview_requests: BTreeSet::new(),
             focus_requests: BTreeSet::new(),
@@ -481,6 +483,7 @@ impl EditorSpace {
                     self.persist();
                 }
                 FileEvent::Saved(saved) => {
+                    self.recent_saves.push(saved.snapshot());
                     self.saving.remove(&saved.path);
                     if let Some(index) = self
                         .documents
@@ -778,6 +781,19 @@ impl EditorSpace {
                 .or_default()
                 .want_focus = true;
         }
+    }
+    pub fn take_saved_snapshots(&mut self) -> Vec<buture_editor::TextSnapshot> {
+        std::mem::take(&mut self.recent_saves)
+    }
+    pub fn open_snapshots(&self) -> Vec<buture_editor::TextSnapshot> {
+        self.groups
+            .iter()
+            .flat_map(|g| g.tabs.iter().copied())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .take(64)
+            .map(|index| self.documents[index].buffer.snapshot())
+            .collect()
     }
     pub fn active_snapshot(&self) -> Option<buture_editor::TextSnapshot> {
         let index = self.groups[self.group_active].active?;

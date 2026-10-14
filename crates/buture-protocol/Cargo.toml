@@ -1,0 +1,13 @@
+[package]
+name = "buture-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Bounded local JSON protocol transport."
+[lints]
+workspace = true
+[dependencies]
+serde_json = "=1.0.154"

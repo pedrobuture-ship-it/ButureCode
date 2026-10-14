@@ -10,6 +10,7 @@ pub enum Action {
     OpenFolder,
     RunProject,
     Doctor,
+    LanguageServers,
     Settings,
     Effects,
     SearchDocument,
@@ -69,6 +70,12 @@ impl CommandRegistry {
             ("workspace.open", "Open Folder", Global, OpenFolder),
             ("project.run", "Run Project", Global, RunProject),
             ("doctor.scan", "Run Doctor", Global, Doctor),
+            (
+                "language.servers",
+                "Language Servers",
+                Global,
+                LanguageServers,
+            ),
             ("terminal.toggle", "Toggle Terminal", Global, Terminal),
             (
                 "git.commit",

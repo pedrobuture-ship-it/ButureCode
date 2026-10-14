@@ -6,7 +6,12 @@ rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "Future language server client."
+description = "Language-independent local LSP client."
 
 [lints]
 workspace = true
+
+[dependencies]
+buture-protocol = { path = "../buture-protocol" }
+buture-editor = { path = "../buture-editor" }
+serde_json = "=1.0.154"

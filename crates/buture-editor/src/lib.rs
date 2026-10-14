@@ -392,6 +392,16 @@ pub struct Saved {
     id: u64,
     rope: Rope,
 }
+impl Saved {
+    pub fn snapshot(&self) -> TextSnapshot {
+        TextSnapshot {
+            path: self.path.clone(),
+            rope: self.rope.clone(),
+            revision: 0,
+            content_id: self.id,
+        }
+    }
+}
 #[derive(Debug)]
 pub enum FileEvent {
     Opened(Buffer),

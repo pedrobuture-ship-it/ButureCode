@@ -535,6 +535,11 @@ version = "0.1.0"
 [[package]]
 name = "buture-lsp"
 version = "0.1.0"
+dependencies = [
+ "buture-editor",
+ "buture-protocol",
+ "serde_json",
+]
 
 [[package]]
 name = "buture-project"
@@ -543,6 +548,13 @@ dependencies = [
  "ignore",
  "serde_json",
  "toml",
+]
+
+[[package]]
+name = "buture-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -594,7 +606,9 @@ dependencies = [
  "buture-core",
  "buture-doctor",
  "buture-editor",
+ "buture-lsp",
  "buture-project",
+ "buture-protocol",
  "buture-search",
  "buture-settings",
  "buture-tasks",
@@ -602,6 +616,7 @@ dependencies = [
  "buture-toolchains",
  "buture-workspace",
  "egui",
+ "serde_json",
 ]
 
 [[package]]

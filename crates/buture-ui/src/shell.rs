@@ -93,6 +93,8 @@ pub struct IdeShell {
     search: crate::search::SearchPanel,
     palette: crate::palette::Palette,
     quick_open: crate::quick_open::QuickOpen,
+    language: crate::language::Language,
+    show_language: bool,
     tasks: crate::tasks::Tasks,
     terminal: crate::terminal::Terminals,
     terminal_open: bool,
@@ -164,6 +166,8 @@ impl IdeShell {
             search: Default::default(),
             palette: Default::default(),
             quick_open: Default::default(),
+            language: Default::default(),
+            show_language: false,
             tasks: Default::default(),
             terminal: Default::default(),
             terminal_open: false,
@@ -301,7 +305,16 @@ impl IdeShell {
         self.show_bottom_panel = true;
         self.terminal.start(Some(&std::env::temp_dir()));
     }
+    pub fn open_language(&mut self) {
+        self.active = 7;
+        self.show_language = true;
+        self.show_shortcuts = false;
+        self.show_project = false;
+        self.show_doctor = false;
+        self.show_toolchains = false;
+    }
     pub fn open_shortcuts(&mut self) {
+        self.show_language = false;
         self.palette.open = false;
         self.quick_open.open = false;
         self.show_shortcuts = true;
@@ -443,6 +456,7 @@ impl IdeShell {
                 self.dialog_focus = false;
             }
             Action::Doctor => self.open_doctor(),
+            Action::LanguageServers => self.open_language(),
             Action::RunProject => {
                 self.active = 3;
                 self.show_project = false;
@@ -451,6 +465,7 @@ impl IdeShell {
                 self.tasks.smart_run();
             }
             Action::Settings => {
+                self.show_language = false;
                 self.show_shortcuts = true;
                 self.active = 7;
                 self.show_doctor = false;
@@ -577,6 +592,7 @@ impl IdeShell {
         }
     }
     pub fn open_file(&mut self, path: std::path::PathBuf) {
+        self.show_language = false;
         self.show_shortcuts = false;
         if let Some(root) = &self.root {
             self.editors.open(root.clone(), path);
@@ -645,6 +661,7 @@ impl IdeShell {
         self.show_toolchains = false;
     }
     pub fn open_toolchain_manager(&mut self) {
+        self.show_language = false;
         self.show_shortcuts = false;
         self.show_doctor = false;
         self.show_project = false;
@@ -746,6 +763,7 @@ impl IdeShell {
         if let Some(error) = self.editors.poll() {
             self.message = error;
         }
+        self.language.poll(&mut self.editors);
         if let Some(scan) = &self.project_scan
             && let Ok(detection) = scan.events.try_recv()
         {
@@ -838,6 +856,7 @@ impl IdeShell {
                             .send(buture_settings::Request::LoadWorkspace(root.clone()));
                     }
                     if self.root.as_ref() != Some(&root) {
+                        self.language.reset_workspace();
                         self.preview = None;
                         self.editors.set_workspace(root.clone());
                         self.project = None;
@@ -1087,6 +1106,8 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                                             );
                                         }
                                     }
+                                } else if category == "Languages" {
+                                    if ui.button("Language Servers").clicked() { self.open_language(); }
                                 } else if category == "Development" || category == "Toolchains" {
                                     if ui.button("Toolchains").clicked() {
                                         self.show_shortcuts = false;
@@ -1102,7 +1123,9 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                     sidebar(&mut side, &theme, self.active);
                 }
                 let mut center = region(ui, "editor", layout.editor.shrink(theme.spacing.md));
-                if self.show_shortcuts {
+                if self.show_language && self.active==7 {
+                    self.language.show(&mut center, &theme, self.root.as_deref());
+                } else if self.show_shortcuts {
                     if let Some(action) = self.shortcuts.show(&mut center, &theme, &self.commands, &self.keymap) {
                         if let Some(store) = &self.shortcut_store {
                             match action { crate::shortcuts::Action::Save => store.save(self.shortcuts.text.clone()), crate::shortcuts::Action::Reload => store.reload() }
