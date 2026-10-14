@@ -11,6 +11,7 @@ pub enum Action {
     RunProject,
     Doctor,
     LanguageServers,
+    LanguageFeature(&'static str),
     Settings,
     Effects,
     SearchDocument,
@@ -66,6 +67,55 @@ impl CommandRegistry {
         use Action::*;
         use Scope::{Editor as Editing, Global};
         let entries = [
+            (
+                "language.completion",
+                "Completion",
+                Editing,
+                LanguageFeature("completion"),
+            ),
+            ("language.hover", "Hover", Editing, LanguageFeature("hover")),
+            (
+                "language.definition",
+                "Go to Definition",
+                Editing,
+                LanguageFeature("definition"),
+            ),
+            (
+                "language.references",
+                "Find References",
+                Editing,
+                LanguageFeature("references"),
+            ),
+            (
+                "language.rename",
+                "Rename Symbol",
+                Editing,
+                LanguageFeature("rename"),
+            ),
+            (
+                "language.signature",
+                "Signature Help",
+                Editing,
+                LanguageFeature("signature"),
+            ),
+            (
+                "language.documentSymbols",
+                "Document Symbols",
+                Editing,
+                LanguageFeature("documentSymbols"),
+            ),
+            (
+                "language.workspaceSymbols",
+                "Workspace Symbols",
+                Global,
+                LanguageFeature("workspaceSymbols"),
+            ),
+            (
+                "language.codeActions",
+                "Code Actions",
+                Editing,
+                LanguageFeature("codeActions"),
+            ),
             ("file.open", "Open File", Global, OpenFile),
             ("workspace.open", "Open Folder", Global, OpenFolder),
             ("project.run", "Run Project", Global, RunProject),

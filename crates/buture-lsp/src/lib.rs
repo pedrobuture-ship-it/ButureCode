@@ -56,7 +56,19 @@ impl Server {
         ConfirmedServer(self)
     }
 }
+pub mod features;
 pub enum Event {
+    Feature {
+        kind: features::Kind,
+        result: features::Result,
+        context: Option<TextSnapshot>,
+    },
+    Diagnostics {
+        path: PathBuf,
+        items: Vec<features::Diagnostic>,
+        signature: Option<(u64, u64)>,
+        markers: std::sync::Arc<BTreeMap<usize, features::Marker>>,
+    },
     Ready(Value),
     Response {
         method: String,
@@ -122,7 +134,7 @@ impl Drop for Client {
 impl ConfirmedServer {
     pub fn start(self) -> Client {
         let (sender, rx) = mpsc::sync_channel(64);
-        let (tx, events) = mpsc::sync_channel(64);
+        let (tx, events) = mpsc::sync_channel(8);
         let stop = Arc::new(AtomicBool::new(false));
         let cancel = stop.clone();
         std::thread::spawn(move || {
@@ -198,8 +210,8 @@ pub fn position(snapshot: &TextSnapshot, character: usize) -> Option<Value> {
     Some(json!({"line":line,"character":column}))
 }
 pub fn character(snapshot: &TextSnapshot, position: &Value) -> Option<usize> {
-    let line = position["line"].as_u64()? as usize;
-    let column = position["character"].as_u64()? as usize;
+    let line = usize::try_from(position["line"].as_u64()?).ok()?;
+    let column = usize::try_from(position["character"].as_u64()?).ok()?;
     if line >= snapshot.rope.len_lines() {
         return None;
     }
@@ -332,7 +344,7 @@ fn run(
     let mut initialized = false;
     let mut next = 1u64;
     let mut pending = BTreeMap::<u64, Pending>::new();
-    let mut documents = BTreeMap::new();
+    let mut documents = BTreeMap::<String, Document>::new();
     let mut latest = None;
     let mut include_text = false;
     let mut shutdown = None::<Instant>;
@@ -407,11 +419,50 @@ fn run(
                                 notify(&process, "exit", Value::Null)?;
                                 exiting = Some(Instant::now());
                             } else {
-                                let _ = tx.send(Event::Response {
-                                    method: request.method,
-                                    result: value["result"].clone(),
-                                    context: request.context,
-                                });
+                                if let Some(kind) = features::Kind::from_method(&request.method) {
+                                    match features::parse(
+                                        kind,
+                                        &value["result"],
+                                        request.context.as_ref(),
+                                    ) {
+                                        Ok(result) => {
+                                            let versions = documents
+                                                .iter()
+                                                .map(|(uri, doc)| (uri.clone(), doc.version))
+                                                .collect();
+                                            let valid = result.edit.as_ref().is_none_or(|edit| {
+                                                features::version_matches(edit, &versions)
+                                            }) && result.entries.iter().all(|entry| {
+                                                entry.edit.as_ref().is_none_or(|edit| {
+                                                    features::version_matches(edit, &versions)
+                                                })
+                                            });
+                                            if valid {
+                                                let _ = tx.send(Event::Feature {
+                                                    kind,
+                                                    result,
+                                                    context: request.context,
+                                                });
+                                            } else {
+                                                let _ = tx.send(Event::Warning(LspError::Server(
+                                                    "Workspace edit has a stale document version"
+                                                        .into(),
+                                                )));
+                                            }
+                                        }
+                                        Err(error) => {
+                                            let _ = tx.send(Event::Warning(LspError::Server(
+                                                error.to_string(),
+                                            )));
+                                        }
+                                    }
+                                } else {
+                                    let _ = tx.send(Event::Response {
+                                        method: request.method,
+                                        result: value["result"].clone(),
+                                        context: request.context,
+                                    });
+                                }
                             }
                         }
                     } else if let Some(method) = value["method"].as_str() {
@@ -440,10 +491,29 @@ fn run(
                             };
                             process.send(json!({"jsonrpc":"2.0","id":id,"result":result}))?;
                         } else {
-                            let _ = tx.send(Event::Notification {
-                                method: method.into(),
-                                params: value["params"].clone(),
-                            });
+                            if method == "textDocument/publishDiagnostics" {
+                                let params = &value["params"];
+                                let uri = params["uri"].as_str().unwrap_or("");
+                                let current = documents.get(uri);
+                                if params["version"].as_i64().is_none_or(|version| {
+                                    current.is_some_and(|doc| i64::from(doc.version) == version)
+                                }) && let Some(path) = uri_path(uri)
+                                {
+                                    let items = features::diagnostics(params);
+                                    let signature = current.map(|doc| doc.signature);
+                                    let _ = tx.send(Event::Diagnostics {
+                                        path,
+                                        markers: features::markers(&items),
+                                        items,
+                                        signature,
+                                    });
+                                }
+                            } else {
+                                let _ = tx.send(Event::Notification {
+                                    method: method.into(),
+                                    params: value["params"].clone(),
+                                });
+                            }
                         }
                     }
                 }
@@ -578,6 +648,7 @@ while True:
  if m=='exit': break
  if 'id' in v:
   r={'capabilities':{'positionEncoding':'utf-16','textDocumentSync':{'openClose':True,'change':1,'save':{'includeText':True}}}} if m=='initialize' else {'observed':m}
+  if m=='textDocument/completion': r=[{'label':'main','insertText':'main'}]
   b=json.dumps({'jsonrpc':'2.0','id':v['id'],'result':r}).encode();sys.stdout.buffer.write(b'Content-Length: '+str(len(b)).encode()+b'\r\n\r\n'+b);sys.stdout.buffer.flush()
 "#;
         let server = Server {
@@ -616,6 +687,25 @@ while True:
         client
             .sync(vec![buffer.snapshot()], vec![saved.snapshot()])
             .expect("change/save");
+        client.request("textDocument/completion",json!({"textDocument":{"uri":file_uri(buffer.path.as_ref().expect("path"))},"position":{"line":1,"character":3}}),Some(buffer.snapshot())).expect("completion");
+        loop {
+            match client
+                .events
+                .recv_timeout(Duration::from_secs(3))
+                .expect("completion result")
+            {
+                Event::Feature {
+                    kind: features::Kind::Completion,
+                    result,
+                    ..
+                } => {
+                    assert_eq!(result.entries[0].label, "main");
+                    break;
+                }
+                Event::Warning(e) => panic!("{e}"),
+                _ => {}
+            }
+        }
         client.sync(vec![], vec![]).expect("close");
         client
             .request("fixture/ping", Value::Null, None)

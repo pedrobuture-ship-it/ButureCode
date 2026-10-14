@@ -117,7 +117,7 @@ pub struct Process {
 impl Process {
     pub fn start(spec: Spec) -> Self {
         let (sender, requests) = mpsc::sync_channel(64);
-        let (tx, events) = mpsc::sync_channel(64);
+        let (tx, events) = mpsc::sync_channel(8);
         let stop = Arc::new(AtomicBool::new(false));
         let cancel = stop.clone();
         std::thread::spawn(move || {
@@ -200,7 +200,7 @@ fn run(
         let mut bytes = [0; 8192];
         while reader.read(&mut bytes).is_ok_and(|n| n > 0) {}
     });
-    let (write_tx, write_rx) = mpsc::sync_channel::<Value>(64);
+    let (write_tx, write_rx) = mpsc::sync_channel::<Value>(8);
     let (fail_tx, fail_rx) = mpsc::channel();
     let writer_fail = fail_tx.clone();
     std::thread::spawn(move || {
@@ -211,7 +211,7 @@ fn run(
             }
         }
     });
-    let (read_tx, read_rx) = mpsc::sync_channel(64);
+    let (read_tx, read_rx) = mpsc::sync_channel(8);
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         loop {

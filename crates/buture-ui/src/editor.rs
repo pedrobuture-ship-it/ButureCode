@@ -26,6 +26,7 @@ type BracketCache = ((u64, usize, bool), Option<(usize, usize)>);
 pub struct View {
     pub selection: Selection,
     pub additional: Vec<Selection>,
+    markers: std::sync::Arc<BTreeMap<usize, buture_lsp::features::Marker>>,
     folded: BTreeSet<usize>,
     fold_revision: u64,
     bracket_cache: Option<BracketCache>,
@@ -41,6 +42,8 @@ pub struct Document {
     pub pinned: bool,
     pub preview: bool,
     pub parsed: Option<std::sync::Arc<buture_editor::parsing::Parsed>>,
+    markers: std::sync::Arc<BTreeMap<usize, buture_lsp::features::Marker>>,
+    diagnostic_signature: Option<(u64, u64)>,
     parse_requested: Option<(u64, u64)>,
 }
 #[derive(Default)]
@@ -58,6 +61,7 @@ pub struct EditorSpace {
     parsing: buture_editor::parsing::Service,
     pub saving: BTreeSet<PathBuf>,
     recent_saves: Vec<buture_editor::TextSnapshot>,
+    pending_positions: BTreeMap<PathBuf, (usize, usize)>,
     pub loading: BTreeSet<PathBuf>,
     preview_requests: BTreeSet<PathBuf>,
     focus_requests: BTreeSet<PathBuf>,
@@ -84,6 +88,7 @@ impl Default for EditorSpace {
             parsing: Default::default(),
             saving: BTreeSet::new(),
             recent_saves: Vec::new(),
+            pending_positions: BTreeMap::new(),
             loading: BTreeSet::new(),
             preview_requests: BTreeSet::new(),
             focus_requests: BTreeSet::new(),
@@ -428,6 +433,8 @@ impl EditorSpace {
                         preview,
                         parsed: None,
                         parse_requested: None,
+                        markers: Default::default(),
+                        diagnostic_signature: None,
                     };
                     if index == self.documents.len() {
                         self.documents.push(document);
@@ -462,6 +469,7 @@ impl EditorSpace {
                         }
                     }
                     self.active = index;
+                    self.apply_pending_position(index);
                     if let Some(path) = &self.documents[index].buffer.path
                         && self.focus_requests.remove(path)
                     {
@@ -635,6 +643,13 @@ impl EditorSpace {
             document.preview = false;
         }
         let view = self.groups[owner].views.entry(active).or_default();
+        if document.diagnostic_signature
+            == Some((document.buffer.revision, document.buffer.content_id()))
+        {
+            view.markers = document.markers.clone();
+        } else if !view.markers.is_empty() {
+            view.markers = Default::default();
+        }
         let mut error = None;
         let parsed = document.parsed.as_deref().filter(|p| {
             p.revision == document.buffer.revision && p.content_id == document.buffer.content_id()
@@ -794,6 +809,148 @@ impl EditorSpace {
             .take(64)
             .map(|index| self.documents[index].buffer.snapshot())
             .collect()
+    }
+    pub fn set_markers(
+        &mut self,
+        path: &Path,
+        signature: Option<(u64, u64)>,
+        markers: std::sync::Arc<BTreeMap<usize, buture_lsp::features::Marker>>,
+    ) {
+        if let Some(document) = self
+            .documents
+            .iter_mut()
+            .find(|d| d.buffer.path.as_deref() == Some(path))
+        {
+            document.markers = markers;
+            document.diagnostic_signature = signature.or(Some((
+                document.buffer.revision,
+                document.buffer.content_id(),
+            )));
+        }
+    }
+    pub fn reveal_position(&mut self, path: PathBuf, line: usize, column: usize) {
+        self.pending_positions.insert(path.clone(), (line, column));
+        if let Some(index) = self.groups[self.group_active].active
+            && self.documents[index].buffer.path.as_ref() == Some(&path)
+        {
+            self.apply_pending_position(index);
+        }
+    }
+    fn apply_pending_position(&mut self, index: usize) {
+        let Some(path) = self.documents[index].buffer.path.clone() else {
+            return;
+        };
+        if let Some((line, column)) = self.pending_positions.remove(&path) {
+            let snapshot = self.documents[index].buffer.snapshot();
+            if let Some(head) = buture_lsp::character(
+                &snapshot,
+                &serde_json::json!({"line":line,"character":column}),
+            ) {
+                let view = self.groups[self.group_active]
+                    .views
+                    .entry(index)
+                    .or_default();
+                view.selection = Selection { anchor: head, head };
+                view.additional.clear();
+                view.follow_caret = true;
+                view.want_focus = true;
+            }
+        }
+    }
+    pub fn open_buffers(&self) -> Vec<Buffer> {
+        self.groups
+            .iter()
+            .flat_map(|g| g.tabs.iter().copied())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .take(64)
+            .map(|i| self.documents[i].buffer.clone())
+            .collect()
+    }
+    pub fn caret_offset(&self) -> usize {
+        self.groups[self.group_active]
+            .active
+            .and_then(|i| self.groups[self.group_active].views.get(&i))
+            .map(|v| v.selection.head)
+            .unwrap_or(0)
+    }
+    pub fn selection_range(&self) -> Range<usize> {
+        self.groups[self.group_active]
+            .active
+            .and_then(|i| self.groups[self.group_active].views.get(&i))
+            .map(|v| v.selection.range())
+            .unwrap_or(0..0)
+    }
+    pub fn set_caret(&mut self, position: usize) {
+        if let Some(index) = self.groups[self.group_active].active {
+            let head = position.min(self.documents[index].buffer.len_chars());
+            let view = self.groups[self.group_active]
+                .views
+                .entry(index)
+                .or_default();
+            view.selection = Selection { anchor: head, head };
+            view.additional.clear();
+            view.follow_caret = true;
+        }
+    }
+    pub fn apply_language_edit(
+        &mut self,
+        prepared: buture_lsp::features::PreparedEdit,
+    ) -> Option<String> {
+        for file in &prepared.files {
+            if let Some(index) = self
+                .documents
+                .iter()
+                .position(|d| d.buffer.path == Some(file.expected.path.clone()))
+            {
+                let buffer = &self.documents[index].buffer;
+                let open = self.groups.iter().any(|g| g.tabs.contains(&index));
+                if (open || buffer.dirty() || self.saving.contains(&file.expected.path))
+                    && (buffer.revision != file.expected.revision
+                        || buffer.content_id() != file.expected.content_id)
+                {
+                    return Some(
+                        "A document changed during edit review; request edits again".into(),
+                    );
+                }
+            }
+        }
+        for file in prepared.files {
+            let index = if let Some(index) = self
+                .documents
+                .iter()
+                .position(|d| d.buffer.path == Some(file.expected.path.clone()))
+            {
+                self.documents[index].buffer = file.buffer;
+                self.documents[index].parsed = None;
+                self.documents[index].parse_requested = None;
+                self.documents[index].preview = false;
+                index
+            } else {
+                let index = self.documents.len();
+                self.documents.push(Document {
+                    buffer: file.buffer,
+                    view: View::default(),
+                    pinned: false,
+                    preview: false,
+                    parsed: None,
+                    parse_requested: None,
+                    markers: Default::default(),
+                    diagnostic_signature: None,
+                });
+                index
+            };
+            let group = &mut self.groups[self.group_active];
+            if !group.tabs.contains(&index) {
+                group.tabs.push(index);
+            }
+            if group.active.is_none() {
+                group.active = Some(index);
+                self.active = index;
+            }
+        }
+        self.persist();
+        None
     }
     pub fn active_snapshot(&self) -> Option<buture_editor::TextSnapshot> {
         let index = self.groups[self.group_active].active?;
@@ -1463,6 +1620,21 @@ fn render_parsed(
                 ui.painter()
                     .rect_filled(rect, 0, Color32::from(theme.surface.panel));
             }
+            if let Some(marker) = view.markers.get(&row) {
+                let dot = egui::Rect::from_min_size(
+                    pos2(rect.left() + 2.0, rect.top() + 4.0),
+                    vec2(10.0, 10.0),
+                );
+                let color = match marker.severity {
+                    1 => theme.semantic.error,
+                    2 => theme.semantic.warning,
+                    _ => theme.semantic.info,
+                };
+                ui.painter()
+                    .circle_filled(dot.center(), 3.0, egui::Color32::from(color));
+                ui.interact(dot, id.with(("diagnostic", row)), Sense::hover())
+                    .on_hover_text(&marker.message);
+            }
             ui.painter().text(
                 pos2(rect.left() + gutter - 12.0, rect.top() + 2.0),
                 egui::Align2::RIGHT_TOP,
@@ -1568,6 +1740,42 @@ fn render_parsed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn language_edits_are_atomic_when_one_buffer_changes_during_review() {
+        let mut space = EditorSpace::default();
+        let mut prepared = buture_lsp::features::PreparedEdit { files: vec![] };
+        for (i, text) in ["one", "two"].iter().enumerate() {
+            let mut buffer = Buffer::from_text(text);
+            buffer.path = Some(format!("/fixture-{i}.rs").into());
+            let expected = buffer.snapshot();
+            let mut changed = buffer.clone();
+            changed.insert(0, "edit ").expect("fixture edit");
+            prepared.files.push(buture_lsp::features::PreparedFile {
+                expected,
+                buffer: changed,
+                summary: String::new(),
+            });
+            space.documents.push(Document {
+                buffer,
+                view: Default::default(),
+                pinned: false,
+                preview: false,
+                parsed: None,
+                parse_requested: None,
+                markers: Default::default(),
+                diagnostic_signature: None,
+            });
+            space.groups[0].tabs.push(i);
+        }
+        space.groups[0].active = Some(0);
+        space.documents[1]
+            .buffer
+            .insert(0, "owner ")
+            .expect("owner edit");
+        assert!(space.apply_language_edit(prepared).is_some());
+        assert_eq!(space.documents[0].buffer.rope().to_string(), "one");
+        assert_eq!(space.documents[1].buffer.rope().to_string(), "owner two");
+    }
     #[test]
     fn background_reload_preserves_tab_metadata_and_local_edits() {
         let root = std::env::temp_dir().join(format!("buture-ui-reload-{}", std::process::id()));
@@ -1683,6 +1891,8 @@ mod tests {
                 preview: false,
                 parsed: None,
                 parse_requested: None,
+                markers: Default::default(),
+                diagnostic_signature: None,
             });
         }
         space.documents[2]
@@ -1710,6 +1920,8 @@ mod tests {
             preview: false,
             parsed: None,
             parse_requested: None,
+            markers: Default::default(),
+            diagnostic_signature: None,
         });
         space.groups[0].tabs = vec![0];
         space.groups[0].active = Some(0);

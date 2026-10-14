@@ -14,11 +14,13 @@ pub struct Availability {
     pub workspace: bool,
     pub editor: bool,
     pub quick_open: bool,
+    pub language: bool,
 }
 impl Availability {
     pub fn reason(self, action: Action, scope: Scope) -> Option<&'static str> {
         match action {
             Action::Unavailable(reason) => Some(reason),
+            Action::LanguageFeature(_) if !self.language => Some("Start a language server first"),
             Action::QuickOpen if !self.quick_open => Some("File navigation is not available yet"),
             Action::SearchWorkspace | Action::QuickOpen if !self.workspace => {
                 Some("Open a folder first")

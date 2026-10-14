@@ -98,6 +98,7 @@ pub struct IdeShell {
     tasks: crate::tasks::Tasks,
     terminal: crate::terminal::Terminals,
     terminal_open: bool,
+    problems_open: bool,
     commands: buture_core::commands::CommandRegistry,
     open_file_dialog: bool,
     file_input: String,
@@ -171,6 +172,7 @@ impl IdeShell {
             tasks: Default::default(),
             terminal: Default::default(),
             terminal_open: false,
+            problems_open: false,
             commands: buture_core::commands::CommandRegistry::standard(),
             open_file_dialog: false,
             file_input: String::new(),
@@ -290,7 +292,13 @@ impl IdeShell {
             workspace: self.root.is_some(),
             editor: self.editors.active_snapshot().is_some(),
             quick_open: true,
+            language: self.language.client.is_some() && !self.language.capabilities.is_null(),
         }
+    }
+    pub fn preview_intelligence(&mut self) {
+        self.language
+            .intelligence
+            .open(buture_lsp::features::Kind::Completion);
     }
     pub fn preview_run(&mut self) {
         self.preview_tasks();
@@ -329,6 +337,7 @@ impl IdeShell {
             || self.open_file_dialog
             || self.open_folder
             || self.exit_review
+            || self.language.intelligence.visible
         {
             return;
         }
@@ -457,6 +466,20 @@ impl IdeShell {
             }
             Action::Doctor => self.open_doctor(),
             Action::LanguageServers => self.open_language(),
+            Action::LanguageFeature(id) => {
+                let kind = match id {
+                    "completion" => buture_lsp::features::Kind::Completion,
+                    "hover" => buture_lsp::features::Kind::Hover,
+                    "definition" => buture_lsp::features::Kind::Definition,
+                    "references" => buture_lsp::features::Kind::References,
+                    "rename" => buture_lsp::features::Kind::Rename,
+                    "signature" => buture_lsp::features::Kind::Signature,
+                    "documentSymbols" => buture_lsp::features::Kind::DocumentSymbols,
+                    "workspaceSymbols" => buture_lsp::features::Kind::WorkspaceSymbols,
+                    _ => buture_lsp::features::Kind::CodeActions,
+                };
+                self.language.intelligence.open(kind);
+            }
             Action::RunProject => {
                 self.active = 3;
                 self.show_project = false;
@@ -764,6 +787,9 @@ impl IdeShell {
             self.message = error;
         }
         self.language.poll(&mut self.editors);
+        if let Some(kind) = self.language.intelligence.requested() {
+            self.language.request_feature(kind, &self.editors);
+        }
         if let Some(scan) = &self.project_scan
             && let Ok(detection) = scan.events.try_recv()
         {
@@ -891,6 +917,7 @@ impl IdeShell {
         self.handle_shortcuts(ctx);
         self.command_palette(ctx);
         self.quick_picker(ctx);
+        self.intelligence_popup(ctx);
         self.workspace_dialogs(ctx);
         self.exit_dialog(ctx);
         if self.exit_review {
@@ -1207,7 +1234,7 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                     self.inspector(&mut region(ui, "inspector", rect.shrink(theme.spacing.xl)));
                 }
                 if let Some(rect) = layout.bottom {
-                    if self.terminal_open { self.terminal.show(&mut region(ui, "terminal", rect.shrink(theme.spacing.md)), &theme, self.root.as_deref()); } else { output_panel(
+                    if self.problems_open { if let Some(location)=self.language.show_problems(&mut region(ui,"problems",rect.shrink(theme.spacing.md)),&theme){self.navigate_language(location);} } else if self.terminal_open { self.terminal.show(&mut region(ui, "terminal", rect.shrink(theme.spacing.md)), &theme, self.root.as_deref()); } else { output_panel(
                         &mut region(ui, "output", rect.shrink(theme.spacing.lg)),
                         &theme,
                         self.root.as_deref(),
@@ -1317,6 +1344,58 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
         }
     }
 
+    fn navigate_language(&mut self, location: buture_lsp::features::Location) {
+        let path = location.path.clone();
+        self.open_path(path.clone());
+        if let Some(range) = location.range
+            && let (Some(line), Some(column)) = (
+                range.start["line"]
+                    .as_u64()
+                    .and_then(|n| usize::try_from(n).ok()),
+                range.start["character"]
+                    .as_u64()
+                    .and_then(|n| usize::try_from(n).ok()),
+            )
+        {
+            self.editors.reveal_position(path, line, column);
+        }
+        self.language.intelligence.visible = false;
+    }
+    fn intelligence_popup(&mut self, ctx: &Context) {
+        self.language
+            .intelligence
+            .review(ctx, &mut self.editors, self.root.as_deref());
+        if !self.language.intelligence.visible {
+            return;
+        }
+        let theme = self.theme;
+        let action = egui::Window::new("Language Intelligence")
+            .title_bar(false)
+            .frame(egui::Frame::NONE)
+            .default_width(780.0)
+            .anchor(Align2::CENTER_TOP, [0.0, 90.0])
+            .show(ctx, |ui| {
+                GlassSurface::new(GlassVariant::Floating)
+                    .show(ui, &theme, self.effects, &mut self.backdrop, |ui| {
+                        self.language
+                            .intelligence
+                            .show(ui, &theme, &mut self.editors)
+                    })
+                    .inner
+            })
+            .and_then(|r| r.inner)
+            .flatten();
+        if let Some(action) = action {
+            match action {
+                crate::intelligence::Action::Request(kind) => {
+                    self.language.request_feature(kind, &self.editors)
+                }
+                crate::intelligence::Action::Navigate(location) => {
+                    self.open_path(location.path);
+                }
+            }
+        }
+    }
     fn workspace_dialogs(&mut self, ctx: &Context) {
         if self.open_file_dialog {
             egui::Window::new("Open File")
@@ -1481,6 +1560,11 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                         .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                 }
                 ui.separator();
+                if ui.button("Problems").clicked() {
+                    self.problems_open = !self.problems_open;
+                    self.terminal_open = false;
+                    self.show_bottom_panel = true;
+                }
                 if ui.button("RUN").clicked() {
                     self.dispatch(buture_core::commands::Action::RunProject);
                 }

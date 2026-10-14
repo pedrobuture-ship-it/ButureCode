@@ -11,3 +11,13 @@ Rust-analyzer começa com build scripts/proc-macros/check on save desabilitados,
 Teste com servidor mock local verifica todo o lifecycle, framing, Unicode UTF-16 e uma requisição correlacionada. Isso não equivale a validar rust-analyzer em todas as versões/plataformas. Windows/macOS não foram executados. Fonte primária de configuração: https://rust-analyzer.github.io/book/configuration.html . Nenhum contexto enviado a um serviço remoto.
 
 Neste host, a consulta explícita de versão falhou: mise não tem versão definida para o shim; o fallback rustup também encontrou recursão do shim. Nenhuma configuração/instalação foi alterada. A validação de lifecycle usou o servidor mock local, e a UI de configuração foi capturada em janela nativa X11. Não afirmar validação de uma sessão real rust-analyzer neste host.
+
+## Intelligence — prompt 40
+
+Command Palette oferece completion, hover, definition, references, rename, signature help, document/workspace symbols e code actions. Atalhos: Ctrl/Cmd+Space, F12, Shift+F12, F2, Ctrl/Cmd+Shift+Space, Ctrl/Cmd+Period. Disponibilidade vem das capabilities do servidor; não há resultados sintéticos quando ele está ausente. Respostas são analisadas no worker, com listas/documentação limitadas.
+
+Completion aplica TextEdits como uma transação de undo e rejeita snapshots antigos. Snippets não são negociados. Rename e text edits de code actions exigem preview/Apply; modificam buffers, sem gravar disco automaticamente. Validam todos os buffers antes de aplicar, rejeitam versões antigas e caminhos fora do root. Resource create/delete/rename e execução de comandos fornecidos pelo servidor permanecem recusados. Save segue a proteção de conflitos existente.
+
+Diagnostics publicados aparecem no gutter e no painel Problems; marcador é invalidado após mudança de revision/content id. A UI mantém até 10 mil diagnostics / 512 arquivos. Diagnostics com versão incompatível são ignorados; servidor que omite a versão não fornece garantia de frescor. Localizações são UTF-16 e navegação abre o arquivo/posição informada, sem afirmar validade depois de mudanças externas.
+
+Testes verificam resposta de completion no mock local, parsing/UTF-16, preparação que mantém disco intacto e undo, e atomicidade da aplicação quando um buffer muda durante a revisão. A sessão rust-analyzer real continua indisponível neste host; a captura nativa registra a UI nesse estado, sem resultados fabricados. Mouse/commands acionam os resultados; navegação completa de popup por teclado e snippets requerem refinamento posterior.
