@@ -290,7 +290,14 @@ impl Repository {
             &args(&["rev-parse", "--show-toplevel"]),
             None,
         )
-        .map_err(|_| GitError::NotRepository)?;
+        .map_err(|error| match error {
+            GitError::Failed { ref message, .. }
+                if message.to_lowercase().contains("not a git repository") =>
+            {
+                GitError::NotRepository
+            }
+            other => other,
+        })?;
         let bytes = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
         let bytes = bytes.strip_suffix(b"\r").unwrap_or(bytes);
         let root = std::fs::canonicalize(decode_path(bytes)?)?;
@@ -606,7 +613,7 @@ fn apply(plan: Plan) -> Result<String, GitError> {
                 values.extend(args(&["-p", head]));
             }
             if repo
-                .read(&["config", "--get", "commit.gpgsign"])
+                .read(&["config", "--bool", "--get", "commit.gpgsign"])
                 .ok()
                 .is_some_and(|b| String::from_utf8_lossy(&b).trim() == "true")
             {

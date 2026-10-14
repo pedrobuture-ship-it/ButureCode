@@ -9,6 +9,7 @@ pub enum Action {
     OpenFile,
     OpenFolder,
     RunProject,
+    SourceControl,
     Doctor,
     LanguageServers,
     LanguageFeature(&'static str),
@@ -135,12 +136,7 @@ impl CommandRegistry {
                 LanguageServers,
             ),
             ("terminal.toggle", "Toggle Terminal", Global, Terminal),
-            (
-                "git.commit",
-                "Git Commit",
-                Global,
-                Unavailable("Git commit integration is not available yet"),
-            ),
+            ("git.commit", "Git Commit", Global, SourceControl),
             (
                 "theme.change",
                 "Change Theme",
@@ -308,7 +304,7 @@ mod tests {
         assert!(registry.register(command).is_err());
         assert!(matches!(
             registry.get("git.commit").expect("command").action,
-            Action::Unavailable(_)
+            Action::SourceControl
         ));
     }
 }

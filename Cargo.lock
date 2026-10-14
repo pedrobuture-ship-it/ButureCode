@@ -619,6 +619,7 @@ dependencies = [
  "buture-doctor",
  "buture-editor",
  "buture-format",
+ "buture-git",
  "buture-lsp",
  "buture-project",
  "buture-protocol",

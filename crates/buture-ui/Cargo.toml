@@ -27,3 +27,4 @@ buture-lsp = { path = "../buture-lsp" }
 buture-protocol = { path = "../buture-protocol" }
 serde_json = "=1.0.154"
 buture-format = { path = "../buture-format" }
+buture-git = { path = "../buture-git" }

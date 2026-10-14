@@ -22,7 +22,9 @@ impl Availability {
             Action::Unavailable(reason) => Some(reason),
             Action::LanguageFeature(_) if !self.language => Some("Start a language server first"),
             Action::QuickOpen if !self.quick_open => Some("File navigation is not available yet"),
-            Action::SearchWorkspace | Action::QuickOpen if !self.workspace => {
+            Action::SearchWorkspace | Action::QuickOpen | Action::SourceControl
+                if !self.workspace =>
+            {
                 Some("Open a folder first")
             }
             _ if scope == Scope::Editor && !self.editor => Some("Open a text document first"),

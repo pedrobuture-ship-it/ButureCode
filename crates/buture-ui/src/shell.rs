@@ -93,6 +93,7 @@ pub struct IdeShell {
     search: crate::search::SearchPanel,
     palette: crate::palette::Palette,
     quick_open: crate::quick_open::QuickOpen,
+    source_control: crate::source_control::SourceControl,
     formatting: crate::formatting::Formatting,
     language: crate::language::Language,
     show_language: bool,
@@ -168,6 +169,7 @@ impl IdeShell {
             search: Default::default(),
             palette: Default::default(),
             quick_open: Default::default(),
+            source_control: Default::default(),
             formatting: Default::default(),
             language: Default::default(),
             show_language: false,
@@ -296,6 +298,10 @@ impl IdeShell {
             quick_open: true,
             language: self.language.client.is_some() && !self.language.capabilities.is_null(),
         }
+    }
+    pub fn preview_source_control(&mut self) {
+        self.open_workspace(std::env::current_dir().unwrap_or_default());
+        self.active = 2;
     }
     pub fn preview_problems(&mut self) {
         self.problems_open = true;
@@ -447,7 +453,8 @@ impl IdeShell {
             if self.tasks.running() {
                 ui.label("Closing cancels the active task (direct child).");
             }
-            let idle = self.editors.saving.is_empty() && self.installation.is_none();
+            if self.source_control.running(){ui.label("Wait for the active Git operation before closing; remote operations may already have effects.");}
+            let idle = self.editors.saving.is_empty() && self.installation.is_none() && !self.source_control.running();
             if ui
                 .add_enabled(idle, egui::Button::new("Save all and close"))
                 .clicked()
@@ -481,6 +488,12 @@ impl IdeShell {
                 self.dialog_focus = false;
             }
             Action::Doctor => self.open_doctor(),
+            Action::SourceControl => {
+                self.active = 2;
+                self.show_project = false;
+                self.show_doctor = false;
+                self.show_shortcuts = false;
+            }
             Action::LanguageServers => self.open_language(),
             Action::Format(selection) => {
                 self.formatting
@@ -737,6 +750,7 @@ impl IdeShell {
             || self.search.busy()
             || self.quick_open.busy()
             || self.tasks.busy()
+            || self.source_control.busy()
     }
     /// Preview first run without reading or writing personal preferences.
     pub fn preview_onboarding(&mut self) {
@@ -769,6 +783,10 @@ impl IdeShell {
     }
     pub fn show(&mut self, ctx: &Context) {
         self.editors.format_on_save = self.settings.get("Editor.formatOnSave") == Some("true");
+        self.source_control.poll(self.active == 2);
+        if let Some(message) = self.source_control.report() {
+            self.message = message;
+        }
         self.terminal.poll();
         self.tasks.poll();
         if let Some(store) = &self.shortcut_store {
@@ -796,7 +814,8 @@ impl IdeShell {
                 || !self.editors.saving.is_empty()
                 || self.installation.is_some()
                 || self.terminal.running()
-                || self.tasks.running())
+                || self.tasks.running()
+                || self.source_control.running())
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.exit_review = true;
@@ -910,6 +929,7 @@ impl IdeShell {
                             .send(buture_settings::Request::LoadWorkspace(root.clone()));
                     }
                     if self.root.as_ref() != Some(&root) {
+                        self.source_control.set_workspace(root.clone());
                         self.formatting.reset_trust();
                         self.language.reset_workspace();
                         self.preview = None;
@@ -946,6 +966,7 @@ impl IdeShell {
         self.handle_shortcuts(ctx);
         self.command_palette(ctx);
         self.quick_picker(ctx);
+        self.source_control.review(ctx);
         self.formatting.review(ctx);
         self.intelligence_popup(ctx);
         self.workspace_dialogs(ctx);
@@ -1141,6 +1162,7 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                             }
                         }
                     }
+                } else if self.active == 2 { self.source_control.summary(&mut side);
                 } else if self.active == 7 {
                     side.heading("Settings");
                     if side.button("Keyboard Shortcuts").clicked() { self.open_shortcuts(); }
@@ -1195,6 +1217,8 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                             match action { crate::shortcuts::Action::Save => store.save(self.shortcuts.text.clone()), crate::shortcuts::Action::Reload => store.reload() }
                         } else { self.shortcuts.error = Some("Profile persistence is disabled in this preview".into()); }
                     }
+                } else if self.active==2 {
+                    if let Some(path)=self.source_control.show(&mut center,&theme,&self.editors.dirty_paths()){self.open_path(path);}
                 } else if self.active==3 {
                     self.tasks.show(&mut center, &theme, self.root.as_deref());
                 } else if self.active==1 {
