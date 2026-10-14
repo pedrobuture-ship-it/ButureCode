@@ -221,6 +221,8 @@ impl IdeShell {
         if let Some(path) = buture_settings::user_path() {
             self.editors
                 .configure_session(path.with_file_name("editor-session.json"));
+            self.tasks
+                .configure_preferences(path.with_file_name("run-preferences.json"));
             self.shortcut_store = Some(buture_settings::keybindings::Store::start(
                 path.with_file_name("keybindings.ini"),
             ));
@@ -242,6 +244,7 @@ impl IdeShell {
     }
     pub fn persist_session(&self) {
         self.editors.flush_session();
+        self.tasks.flush_preferences();
     }
     pub fn split_editor(&mut self, vertical: bool) {
         self.editors.split(if vertical {
@@ -284,6 +287,10 @@ impl IdeShell {
             editor: self.editors.active_snapshot().is_some(),
             quick_open: true,
         }
+    }
+    pub fn preview_run(&mut self) {
+        self.preview_tasks();
+        self.tasks.smart_run();
     }
     pub fn preview_tasks(&mut self) {
         self.open_workspace(std::env::current_dir().unwrap_or_default());
@@ -436,6 +443,13 @@ impl IdeShell {
                 self.dialog_focus = false;
             }
             Action::Doctor => self.open_doctor(),
+            Action::RunProject => {
+                self.active = 3;
+                self.show_project = false;
+                self.show_doctor = false;
+                self.show_shortcuts = false;
+                self.tasks.smart_run();
+            }
             Action::Settings => {
                 self.show_shortcuts = true;
                 self.active = 7;
@@ -1102,7 +1116,7 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                     }
                 } else if self.show_project {
                     if let Some(action)=crate::overview::show(&mut center,self.root.as_deref(),self.project.as_ref(),self.branch.as_deref(),self.project_scan.is_some()){
-                        match action{crate::overview::Action::Doctor=>self.open_doctor(),crate::overview::Action::Toolchains=>self.open_toolchain_manager(),crate::overview::Action::Open(path)=>self.open_file(path),}
+                        match action{crate::overview::Action::Run=>self.dispatch(buture_core::commands::Action::RunProject),crate::overview::Action::Tasks=>{self.active=3;self.show_project=false;},crate::overview::Action::Terminal=>self.dispatch(buture_core::commands::Action::Terminal),crate::overview::Action::Doctor=>self.open_doctor(),crate::overview::Action::Toolchains=>self.open_toolchain_manager(),crate::overview::Action::Open(path)=>self.open_file(path),}
                     }
                 } else if self.show_doctor {
                     if let Some(action)=crate::doctor::show(&mut center,&theme,self.doctor.as_ref(),self.scan.is_some() || self.doctor_scan.is_some(),&mut self.doctor_selected){
@@ -1444,6 +1458,9 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                         .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                 }
                 ui.separator();
+                if ui.button("RUN").clicked() {
+                    self.dispatch(buture_core::commands::Action::RunProject);
+                }
                 if ui.button("Terminal").clicked() {
                     self.terminal_open = !self.terminal_open;
                     self.show_bottom_panel = true;

@@ -99,7 +99,7 @@ pub fn detect(projects: &Detection) -> Vec<Task> {
                                 manager,
                                 &["run", name],
                                 &format!("{manager}: {name}"),
-                                ["start", "dev"].contains(&name.as_str()),
+                                ["start", "dev", "serve", "preview"].contains(&name.as_str()),
                             ));
                         }
                     }
@@ -142,6 +142,93 @@ pub fn detect(projects: &Detection) -> Vec<Task> {
                 tasks.push(task(root, "go", &["test", "./..."], "Go Test", false));
             }
             _ => {}
+        }
+        if project.build_system == BuildSystem::Python {
+            for file in ["main.py", "app.py", "manage.py"] {
+                if root.join(file).is_file() {
+                    tasks.push(task(
+                        root,
+                        if cfg!(windows) { "python" } else { "python3" },
+                        &[file],
+                        &format!("{} · Python {file}", project.name),
+                        true,
+                    ));
+                }
+            }
+        }
+        if project.build_system == BuildSystem::Gradle
+            && let Ok(text) = run::manifest_text(&project.manifest)
+            && text.len() <= 1024 * 1024
+            && text.contains("application")
+        {
+            tasks.push(task(
+                root,
+                "gradle",
+                &["run"],
+                &format!("{} · Gradle Run", project.name),
+                true,
+            ));
+        }
+        if project.build_system == BuildSystem::Maven
+            && let Ok(text) = run::manifest_text(&project.manifest)
+            && text.len() <= 1024 * 1024
+            && text.contains("exec-maven-plugin")
+        {
+            tasks.push(task(
+                root,
+                "mvn",
+                &["exec:java"],
+                &format!("{} · Maven Run", project.name),
+                true,
+            ));
+        }
+        if project.build_system == BuildSystem::Make
+            && let Ok(text) = run::manifest_text(&project.manifest)
+            && text.len() <= 1024 * 1024
+            && text.lines().any(|l| l.starts_with("run:"))
+        {
+            tasks.push(task(
+                root,
+                "make",
+                &["run"],
+                &format!("{} · Make Run", project.name),
+                true,
+            ));
+        }
+        if project.build_system == BuildSystem::Cargo {
+            let inferred = run::rust_targets(project);
+            if !inferred.is_empty() {
+                tasks.extend(inferred);
+                continue;
+            }
+        }
+        if [BuildSystem::CMake, BuildSystem::Make].contains(&project.build_system)
+            && project.name.len() <= 128
+            && project
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || ['_', '-'].contains(&c))
+        {
+            let file = if cfg!(windows) {
+                format!("{}.exe", project.name)
+            } else {
+                project.name.clone()
+            };
+            for folder in ["build", "."] {
+                let binary = root.join(folder).join(&file);
+                if binary.is_file() {
+                    tasks.push(task(
+                        root,
+                        &binary.to_string_lossy(),
+                        &[],
+                        &format!("{} · Run configured binary", project.name),
+                        true,
+                    ));
+                }
+            }
+        }
+        if project.build_system == BuildSystem::NodeScripts {
+            continue;
         }
         for candidate in &project.run_candidates {
             let mut entry = task(
@@ -409,3 +496,5 @@ mod tests {
         }
     }
 }
+
+pub mod run;

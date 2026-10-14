@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 pub enum Action {
     Doctor,
     Toolchains,
+    Run,
+    Tasks,
+    Terminal,
     Open(PathBuf),
 }
 pub fn show(
@@ -28,10 +31,17 @@ pub fn show(
         if ui.button("Toolchains").clicked() {
             action = Some(Action::Toolchains);
         }
-        for label in ["Run", "Build", "Test", "Terminal", "Architecture"] {
-            ui.add_enabled(false, egui::Button::new(label))
-                .on_hover_text("This action is not available yet.");
+        if ui.button("RUN").clicked() {
+            action = Some(Action::Run);
         }
+        if ui.button("Build / Test tasks").clicked() {
+            action = Some(Action::Tasks);
+        }
+        if ui.button("Terminal").clicked() {
+            action = Some(Action::Terminal);
+        }
+        ui.add_enabled(false, egui::Button::new("Architecture"))
+            .on_hover_text("This action is not available yet.");
     });
     ui.separator();
     ui.label(format!(

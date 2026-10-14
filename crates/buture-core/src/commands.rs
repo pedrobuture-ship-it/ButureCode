@@ -8,6 +8,7 @@ pub enum Scope {
 pub enum Action {
     OpenFile,
     OpenFolder,
+    RunProject,
     Doctor,
     Settings,
     Effects,
@@ -66,12 +67,7 @@ impl CommandRegistry {
         let entries = [
             ("file.open", "Open File", Global, OpenFile),
             ("workspace.open", "Open Folder", Global, OpenFolder),
-            (
-                "project.run",
-                "Run Project",
-                Global,
-                Unavailable("Project execution is not available yet"),
-            ),
+            ("project.run", "Run Project", Global, RunProject),
             ("doctor.scan", "Run Doctor", Global, Doctor),
             ("terminal.toggle", "Toggle Terminal", Global, Terminal),
             (

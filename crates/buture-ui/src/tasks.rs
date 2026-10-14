@@ -9,6 +9,10 @@ use std::{
 #[derive(Default)]
 pub struct Tasks {
     tasks: Vec<Task>,
+    run_only: bool,
+    run_requested: bool,
+    preferences: Option<buture_tasks::run::Preferences>,
+    choices: std::collections::BTreeMap<String, String>,
     root: Option<PathBuf>,
     receiver: Option<mpsc::Receiver<Vec<Task>>>,
     plan: Option<Plan>,
@@ -19,6 +23,30 @@ pub struct Tasks {
     error: Option<String>,
 }
 impl Tasks {
+    pub fn flush_preferences(&self) {
+        if let Some(preferences) = &self.preferences {
+            preferences.flush();
+        }
+    }
+    pub fn configure_preferences(&mut self, path: PathBuf) {
+        self.preferences = Some(buture_tasks::run::Preferences::start(path));
+    }
+    pub fn smart_run(&mut self) {
+        self.run_only = true;
+        self.run_requested = true;
+    }
+    fn prepare(&mut self, id: &str) {
+        if let Some(root) = &self.root {
+            match Plan::review(id, &self.tasks, root) {
+                Ok(plan) => {
+                    self.plan = Some(plan);
+                    self.consent = false;
+                    self.error = None;
+                }
+                Err(e) => self.error = Some(e.to_string()),
+            }
+        }
+    }
     pub fn detect(&mut self, root: PathBuf, project: buture_project::Detection) {
         let (tx, rx) = mpsc::channel();
         self.receiver = Some(rx);
@@ -36,11 +64,28 @@ impl Tasks {
         self.execution.is_some()
     }
     pub fn poll(&mut self) {
+        if let Some(preferences) = &self.preferences {
+            while let Ok(event) = preferences.events.try_recv() {
+                match event {
+                    buture_tasks::run::Event::Loaded(values) => self.choices = values,
+                    buture_tasks::run::Event::Failed(error) => self.error = Some(error.to_string()),
+                }
+            }
+        }
         if let Some(rx) = &self.receiver
             && let Ok(tasks) = rx.try_recv()
         {
             self.tasks = tasks;
             self.receiver = None;
+        }
+        if self.run_requested && self.receiver.is_none() && self.root.is_some() {
+            self.run_requested = false;
+            let remembered = self
+                .root
+                .as_ref()
+                .and_then(|root| self.choices.get(&root.to_string_lossy().to_string()))
+                .map(String::as_str);
+            match buture_tasks::run::choose(&self.tasks,remembered) { buture_tasks::run::Choice::Selected(id)=>self.prepare(&id), buture_tasks::run::Choice::Ambiguous(_)=>self.state="Multiple run targets: select the one to use".into(), buture_tasks::run::Choice::Unavailable=>self.state="No run entrypoint could be inferred. Select a configured task or add a project run target.".into() }
         }
         let mut finished = false;
         if let Some(execution) = &self.execution {
@@ -78,9 +123,15 @@ impl Tasks {
     }
     pub fn show(&mut self, ui: &mut egui::Ui, theme: &Theme, root: Option<&Path>) {
         self.poll();
-        ui.heading("Tasks");
+        ui.horizontal(|ui| {
+            ui.heading(if self.run_only { "Smart Run" } else { "Tasks" });
+            if ui.button("RUN").clicked() {
+                self.smart_run();
+            }
+            ui.checkbox(&mut self.run_only, "Run targets only");
+        });
         ui.label("Review the command before trusting project execution. Build scripts and package scripts can execute project code.");
-        if root != self.root.as_deref() {
+        if root.is_none() || root != self.root.as_deref() {
             ui.label("Open or rescan a project to discover tasks.");
         }
         if self.receiver.is_some() {
@@ -90,13 +141,20 @@ impl Tasks {
             ui.colored_label(egui::Color32::from(theme.semantic.warning), error);
         }
         let mut selected = None;
+        let filtered: Vec<_> = self
+            .tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| !self.run_only || t.run)
+            .map(|(i, _)| i)
+            .collect();
         egui::ScrollArea::vertical().max_height(240.0).show_rows(
             ui,
             24.0,
-            self.tasks.len(),
+            filtered.len(),
             |ui, rows| {
                 for index in rows {
-                    let task = &self.tasks[index];
+                    let task = &self.tasks[filtered[index]];
                     ui.horizontal(|ui| {
                         if ui
                             .add_enabled(!self.running(), egui::Button::new(&task.label))
@@ -109,16 +167,12 @@ impl Tasks {
                 }
             },
         );
-        if let Some(selected) = selected
-            && let Some(root) = root
-        {
-            match Plan::review(&selected, &self.tasks, root) {
-                Ok(plan) => {
-                    self.plan = Some(plan);
-                    self.consent = false;
-                    self.error = None;
-                }
-                Err(e) => self.error = Some(e.to_string()),
+        if let Some(selected) = selected {
+            self.prepare(&selected);
+            if self.run_only
+                && let (Some(preferences), Some(root)) = (&self.preferences, &self.root)
+            {
+                preferences.remember(root, selected);
             }
         }
         if let Some(plan) = self.plan.clone() {
@@ -166,5 +220,31 @@ impl Tasks {
                     ui.label(egui::RichText::new(text).monospace());
                 }
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn run_filter_renders_only_available_targets_without_indexing_hidden_tasks() {
+        let mut tasks = Tasks::default();
+        for run in [false, true, false] {
+            tasks.tasks.push(Task {
+                id: format!("task{}", tasks.tasks.len()),
+                label: "fixture".into(),
+                command: "echo".into(),
+                args: vec![],
+                env: Default::default(),
+                cwd: std::env::temp_dir(),
+                dependencies: vec![],
+                run,
+            });
+        }
+        tasks.run_only = true;
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| tasks.show(ui, &Theme::dark(), None));
+        });
     }
 }

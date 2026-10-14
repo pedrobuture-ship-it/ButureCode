@@ -572,6 +572,7 @@ version = "0.1.0"
 dependencies = [
  "buture-project",
  "serde_json",
+ "toml",
 ]
 
 [[package]]
