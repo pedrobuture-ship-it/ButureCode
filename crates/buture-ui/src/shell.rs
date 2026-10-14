@@ -93,6 +93,8 @@ pub struct IdeShell {
     search: crate::search::SearchPanel,
     palette: crate::palette::Palette,
     quick_open: crate::quick_open::QuickOpen,
+    terminal: crate::terminal::Terminals,
+    terminal_open: bool,
     commands: buture_core::commands::CommandRegistry,
     open_file_dialog: bool,
     file_input: String,
@@ -161,6 +163,8 @@ impl IdeShell {
             search: Default::default(),
             palette: Default::default(),
             quick_open: Default::default(),
+            terminal: Default::default(),
+            terminal_open: false,
             commands: buture_core::commands::CommandRegistry::standard(),
             open_file_dialog: false,
             file_input: String::new(),
@@ -279,6 +283,11 @@ impl IdeShell {
             quick_open: true,
         }
     }
+    pub fn preview_terminal(&mut self) {
+        self.terminal_open = true;
+        self.show_bottom_panel = true;
+        self.terminal.start(Some(&std::env::temp_dir()));
+    }
     pub fn open_shortcuts(&mut self) {
         self.palette.open = false;
         self.quick_open.open = false;
@@ -380,6 +389,9 @@ impl IdeShell {
             ));
             if self.installation.is_some() {
                 ui.label("Wait for the active installation to finish before closing.");
+            }
+            if self.terminal.running() {
+                ui.label("Closing terminates active terminal shell sessions.");
             }
             let idle = self.editors.saving.is_empty() && self.installation.is_none();
             if ui
@@ -485,6 +497,10 @@ impl IdeShell {
                 if let Some(error) = self.editors.perform(command) {
                     self.message = error;
                 }
+            }
+            Action::Terminal => {
+                self.terminal_open = !self.terminal_open;
+                self.show_bottom_panel = true;
             }
             Action::Unavailable(reason) => self.message = reason.into(),
         }
@@ -667,6 +683,7 @@ impl IdeShell {
         }
     }
     pub fn show(&mut self, ctx: &Context) {
+        self.terminal.poll();
         if let Some(store) = &self.shortcut_store {
             while let Ok(event) = store.events.try_recv() {
                 match event {
@@ -690,7 +707,8 @@ impl IdeShell {
             && !self.exit_allowed
             && (!self.editors.dirty_paths().is_empty()
                 || !self.editors.saving.is_empty()
-                || self.installation.is_some())
+                || self.installation.is_some()
+                || self.terminal.running())
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.exit_review = true;
@@ -892,6 +910,13 @@ impl IdeShell {
             self.show_inspector,
             self.show_bottom_panel,
         );
+        if self.terminal_open
+            && let Some(bottom) = &mut layout.bottom
+        {
+            let height = ((layout.status.top() - layout.editor.top()) * 0.36).clamp(180.0, 360.0);
+            bottom.min.y = bottom.max.y - height;
+            layout.editor.max.y = bottom.min.y - theme.spacing.xs;
+        }
         let shift = self.sidebar_width - layout.sidebar.width();
         layout.sidebar.max.x += shift;
         layout.editor.min.x += shift;
@@ -1128,12 +1153,12 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                     self.inspector(&mut region(ui, "inspector", rect.shrink(theme.spacing.xl)));
                 }
                 if let Some(rect) = layout.bottom {
-                    output_panel(
+                    if self.terminal_open { self.terminal.show(&mut region(ui, "terminal", rect.shrink(theme.spacing.md)), &theme, self.root.as_deref()); } else { output_panel(
                         &mut region(ui, "output", rect.shrink(theme.spacing.lg)),
                         &theme,
                         self.root.as_deref(),
                         &self.message,
-                    );
+                    ); }
                 }
                 status_bar(
                     &mut region(
@@ -1402,6 +1427,10 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                         .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                 }
                 ui.separator();
+                if ui.button("Terminal").clicked() {
+                    self.terminal_open = !self.terminal_open;
+                    self.show_bottom_panel = true;
+                }
                 ui.add_enabled(false, Button::new("Profile"));
                 ui.label(self.branch.as_deref().unwrap_or("No branch"));
                 if ui.button("Workspace").clicked() {

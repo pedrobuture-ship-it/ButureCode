@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 18] = [
+const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 19] = [
     ("full", VisualEffects::Full, [1440.0, 900.0], true, true),
     (
         "reduced",
@@ -57,6 +57,13 @@ const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 18] = [
         [1440.0, 900.0],
         false,
         false,
+    ),
+    (
+        "terminal",
+        VisualEffects::Full,
+        [1440.0, 900.0],
+        false,
+        true,
     ),
     (
         "overview",
@@ -111,7 +118,12 @@ fn main() -> eframe::Result {
             Ok(Box::new(Capture {
                 shell: buture_ui::IdeShell::new(&creation.egui_ctx),
                 directory,
-                index: 0,
+                index: std::env::args()
+                    .nth(2)
+                    .and_then(|name| CASES.iter().position(|case| case.0 == name))
+                    .unwrap_or(0),
+                case_started: false,
+                single_case: std::env::args().nth(2).is_some_and(|arg| arg != "editing"),
                 requested: false,
                 since_change: Instant::now(),
                 editing_only: std::env::args().nth(2).as_deref() == Some("editing"),
@@ -127,6 +139,8 @@ struct Capture {
     requested: bool,
     since_change: Instant,
     editing_only: bool,
+    single_case: bool,
+    case_started: bool,
 }
 
 impl eframe::App for Capture {
@@ -157,6 +171,10 @@ impl eframe::App for Capture {
                 image.size[0],
                 image.size[1]
             );
+            if self.single_case {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
             self.index += 1;
             if self.index == CASES.len() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -190,6 +208,9 @@ impl eframe::App for Capture {
             if CASES[self.index].0 == "quick-open" {
                 self.shell.preview_quick_open("mainrs");
             }
+            if CASES[self.index].0 == "terminal" {
+                self.shell.preview_terminal();
+            }
             if CASES[self.index].0 == "shortcuts" {
                 self.shell.open_shortcuts();
             }
@@ -222,6 +243,14 @@ impl eframe::App for Capture {
         self.shell.effects = effects;
         self.shell.show_inspector = inspector;
         self.shell.show_bottom_panel = panel;
+        if self.single_case
+            && CASES[self.index].0 == "terminal"
+            && !self.requested
+            && !self.case_started
+        {
+            self.shell.preview_terminal();
+            self.case_started = true;
+        }
         self.shell.show(ctx);
         if !self.requested
             && !self.shell.environment_scan_pending()

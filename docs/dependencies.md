@@ -37,3 +37,9 @@ Fontes: https://docs.rs/ropey/1.6.1/ropey/ , https://tree-sitter.github.io/tree-
 Tree-sitter selecionado: **0.25.10**, MSRV upstream 1.76. Gramáticas fixadas na tabela de `THIRD_PARTY_NOTICES.md`; todos os parsers passam por teste de carga/ABI e parsing. Highlighting usa classificação própria de nós e tokens; não reutiliza código de produtos. O editor não executa comandos de grammars do workspace.
 
 Ropey usa `default-features = false` e `simd`: linhas por LF, com CRLF preservado no conteúdo. Isso alinha coordenadas com Tree-sitter; outros separadores Unicode permanecem caracteres do texto. UTF-8 é preservado, sem prometer navegação por graphemes neste marco.
+
+## Prompts 36–50 — avaliação antes da implementação
+
+`portable-pty` 0.9.0 (MIT, upstream WezTerm) fornece PTY Linux/macOS e ConPTY Windows por API Rust segura; manutenção e portabilidade avaliadas na documentação upstream. `vt100` 0.16.2 (MIT, upstream maintained terminal parser) fornece estado ANSI, cores, alternate screen e scrollback limitado. Evita emulação ANSI artesanal; não copiar código de produtos. As dependências têm unsafe interno; código autoral usa somente a API segura. Validar integração nativa e registrar plataformas não executadas. Fontes: https://docs.rs/portable-pty/0.9.0/portable_pty/ e https://docs.rs/vt100/0.16.2/vt100/ .
+
+LSP/DAP usarão framing limitado de mensagens e `serde_json` já avaliado, conforme especificações primárias https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/ e https://microsoft.github.io/debug-adapter-protocol/specification . Git usará executable oficial por argumentos separados, evitando dependência libgit2 e duplicação da implementação do Git. Execução de projeto exige confiança explícita na UI; servidor/adapter não é iniciado automaticamente.

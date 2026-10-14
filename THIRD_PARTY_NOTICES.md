@@ -44,3 +44,7 @@ Repositórios: https://github.com/tree-sitter/tree-sitter e https://github.com/t
 ## Busca — prompt 32
 
 - regex 1.13.1: MIT OR Apache-2.0, https://github.com/rust-lang/regex . Selecionar Apache-2.0 quando aplicável. `ignore` é usado também na busca; preservar as notices já listadas e os pacotes transitivos do lockfile.
+
+## Terminal (prompt 36)
+
+portable-pty 0.9.0 — MIT, WezTerm contributors, https://github.com/wezterm/wezterm/tree/main/pty . vt100 0.16.2 — MIT, upstream contributors, https://github.com/doy/vt100-rust . Licenças das dependências não alteram os direitos do código autoral. Notices transitivas permanecem nos pacotes Cargo e devem acompanhar distribuição.

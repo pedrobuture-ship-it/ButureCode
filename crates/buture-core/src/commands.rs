@@ -16,6 +16,7 @@ pub enum Action {
     Palette,
     QuickOpen,
     TogglePanel,
+    Terminal,
     ToggleInspector,
     Save,
     CloseFile,
@@ -72,12 +73,7 @@ impl CommandRegistry {
                 Unavailable("Project execution is not available yet"),
             ),
             ("doctor.scan", "Run Doctor", Global, Doctor),
-            (
-                "terminal.toggle",
-                "Toggle Terminal",
-                Global,
-                Unavailable("A terminal session is not available yet"),
-            ),
+            ("terminal.toggle", "Toggle Terminal", Global, Terminal),
             (
                 "git.commit",
                 "Git Commit",

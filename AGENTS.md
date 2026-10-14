@@ -11,7 +11,7 @@
 
 ## Escopo atual
 
-Este ciclo foi ampliado por Pedro Buture até o **prompt 35**. Consulte `Buture Code — Prompts completos do zero.md`. Implementar em sequência, com commits pequenos e validação. Revisar os marcos 24 e 35. Após keybindings, parar e aguardar novas ordens; não antecipar os prompts 36–95.
+Este ciclo foi ampliado por Pedro Buture até o **prompt 50**. Consulte `Buture Code — Prompts completos do zero.md`. Implementar em sequência, com commits pequenos e validação. Revisar o marco 50. Após Memory Inspector, parar e aguardar novas ordens; não antecipar os prompts 51–95.
 
 ## Implementação
 
