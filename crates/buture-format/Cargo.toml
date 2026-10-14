@@ -1,0 +1,15 @@
+[package]
+name = "buture-format"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Reviewed, bounded formatter execution."
+[lints]
+workspace = true
+[dependencies]
+buture-editor = { path = "../buture-editor" }
+buture-toolchains = { path = "../buture-toolchains" }
+toml = "=1.1.8"

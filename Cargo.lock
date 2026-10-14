@@ -521,6 +521,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "buture-format"
+version = "0.1.0"
+dependencies = [
+ "buture-editor",
+ "buture-toolchains",
+ "toml",
+]
+
+[[package]]
 name = "buture-git"
 version = "0.1.0"
 
@@ -606,6 +615,7 @@ dependencies = [
  "buture-core",
  "buture-doctor",
  "buture-editor",
+ "buture-format",
  "buture-lsp",
  "buture-project",
  "buture-protocol",

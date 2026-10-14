@@ -61,6 +61,8 @@ pub struct EditorSpace {
     parsing: buture_editor::parsing::Service,
     pub saving: BTreeSet<PathBuf>,
     recent_saves: Vec<buture_editor::TextSnapshot>,
+    pub format_on_save: bool,
+    format_save_requests: Vec<Buffer>,
     pending_positions: BTreeMap<PathBuf, (usize, usize)>,
     pub loading: BTreeSet<PathBuf>,
     preview_requests: BTreeSet<PathBuf>,
@@ -88,6 +90,8 @@ impl Default for EditorSpace {
             parsing: Default::default(),
             saving: BTreeSet::new(),
             recent_saves: Vec::new(),
+            format_on_save: false,
+            format_save_requests: Vec::new(),
             pending_positions: BTreeMap::new(),
             loading: BTreeSet::new(),
             preview_requests: BTreeSet::new(),
@@ -521,7 +525,49 @@ impl EditorSpace {
             && let Some(path) = &document.buffer.path
             && self.saving.insert(path.clone())
         {
-            self.files.save(document.buffer.clone());
+            if self.format_on_save {
+                self.format_save_requests.push(document.buffer.clone());
+            } else {
+                self.files.save(document.buffer.clone());
+            }
+        }
+    }
+    pub fn take_format_saves(&mut self) -> Vec<Buffer> {
+        std::mem::take(&mut self.format_save_requests)
+    }
+    pub fn resume_original_save(&mut self, buffer: Buffer) {
+        self.files.save(buffer);
+    }
+    pub fn finish_format_save(
+        &mut self,
+        original: Buffer,
+        formatted: Result<buture_format::Formatted, buture_format::FormatError>,
+    ) -> Option<String> {
+        match formatted {
+            Ok(formatted) => {
+                if let Some(error) = self.apply_snapshot_edits(
+                    &formatted.snapshot,
+                    std::slice::from_ref(&formatted.edit),
+                ) {
+                    self.files.save(original);
+                    Some(format!("{error}; saving the original requested snapshot"))
+                } else {
+                    if let Some(document) = self
+                        .documents
+                        .iter()
+                        .find(|d| d.buffer.path.as_ref() == Some(&formatted.snapshot.path))
+                    {
+                        self.files.save(document.buffer.clone());
+                    }
+                    None
+                }
+            }
+            Err(error) => {
+                self.files.save(original);
+                Some(format!(
+                    "Formatting failed ({error}); saving original snapshot"
+                ))
+            }
         }
     }
     pub fn save_all(&mut self) {
@@ -952,9 +998,19 @@ impl EditorSpace {
         self.persist();
         None
     }
+    pub fn active_buffer(&self) -> Option<Buffer> {
+        let index = self.groups[self.group_active].active?;
+        Some(self.documents[index].buffer.clone())
+    }
     pub fn active_snapshot(&self) -> Option<buture_editor::TextSnapshot> {
         let index = self.groups[self.group_active].active?;
         Some(self.documents[index].buffer.snapshot())
+    }
+    pub fn dirty_count(&self) -> usize {
+        self.documents.iter().filter(|d| d.buffer.dirty()).count()
+    }
+    pub fn has_dirty(&self) -> bool {
+        self.documents.iter().any(|d| d.buffer.dirty())
     }
     pub fn dirty_paths(&self) -> Vec<PathBuf> {
         self.documents
@@ -1740,6 +1796,56 @@ fn render_parsed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn formatter_failure_saves_requested_snapshot_and_preserves_later_edits() {
+        let root = std::env::temp_dir().join(format!("buture-format-save-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("fixture");
+        let path = root.join("main.rs");
+        std::fs::write(&path, "fn main() {}\n").expect("source");
+        let original = Buffer::open(&path).expect("buffer");
+        let mut space = EditorSpace::default();
+        space.documents.push(Document {
+            buffer: original.clone(),
+            view: Default::default(),
+            pinned: false,
+            preview: false,
+            parsed: None,
+            parse_requested: None,
+            markers: Default::default(),
+            diagnostic_signature: None,
+        });
+        space.groups[0].tabs.push(0);
+        space.groups[0].active = Some(0);
+        space.saving.insert(path.clone());
+        space.documents[0]
+            .buffer
+            .insert(0, "// owner edit\n")
+            .expect("edit");
+        assert!(
+            space
+                .finish_format_save(original, Err(buture_format::FormatError::MissingTool))
+                .is_some()
+        );
+        let began = std::time::Instant::now();
+        while !space.saving.is_empty() {
+            space.poll();
+            assert!(began.elapsed() < std::time::Duration::from_secs(3));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            std::fs::read_to_string(path).expect("disk"),
+            "fn main() {}\n"
+        );
+        assert!(space.documents[0].buffer.dirty());
+        assert!(
+            space.documents[0]
+                .buffer
+                .rope()
+                .to_string()
+                .starts_with("// owner edit")
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
     #[test]
     fn language_edits_are_atomic_when_one_buffer_changes_during_review() {
         let mut space = EditorSpace::default();

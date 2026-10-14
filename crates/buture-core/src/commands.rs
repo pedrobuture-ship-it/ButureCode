@@ -12,6 +12,7 @@ pub enum Action {
     Doctor,
     LanguageServers,
     LanguageFeature(&'static str),
+    Format(bool),
     Settings,
     Effects,
     SearchDocument,
@@ -67,6 +68,13 @@ impl CommandRegistry {
         use Action::*;
         use Scope::{Editor as Editing, Global};
         let entries = [
+            ("format.document", "Format Document", Editing, Format(false)),
+            (
+                "format.selection",
+                "Format Selection",
+                Editing,
+                Format(true),
+            ),
             (
                 "language.completion",
                 "Completion",

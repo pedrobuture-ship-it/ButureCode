@@ -93,6 +93,7 @@ pub struct IdeShell {
     search: crate::search::SearchPanel,
     palette: crate::palette::Palette,
     quick_open: crate::quick_open::QuickOpen,
+    formatting: crate::formatting::Formatting,
     language: crate::language::Language,
     show_language: bool,
     tasks: crate::tasks::Tasks,
@@ -167,6 +168,7 @@ impl IdeShell {
             search: Default::default(),
             palette: Default::default(),
             quick_open: Default::default(),
+            formatting: Default::default(),
             language: Default::default(),
             show_language: false,
             tasks: Default::default(),
@@ -313,7 +315,15 @@ impl IdeShell {
         self.show_bottom_panel = true;
         self.terminal.start(Some(&std::env::temp_dir()));
     }
+    pub fn open_formatting(&mut self) {
+        self.active = 7;
+        self.formatting.visible = true;
+        self.show_language = false;
+        self.show_shortcuts = false;
+        self.show_toolchains = false;
+    }
     pub fn open_language(&mut self) {
+        self.formatting.visible = false;
         self.active = 7;
         self.show_language = true;
         self.show_shortcuts = false;
@@ -322,6 +332,7 @@ impl IdeShell {
         self.show_toolchains = false;
     }
     pub fn open_shortcuts(&mut self) {
+        self.formatting.visible = false;
         self.show_language = false;
         self.palette.open = false;
         self.quick_open.open = false;
@@ -410,7 +421,7 @@ impl IdeShell {
         }
         if self.exit_saving && self.editors.saving.is_empty() {
             self.exit_saving = false;
-            if self.editors.dirty_paths().is_empty() && self.installation.is_none() {
+            if !self.editors.has_dirty() && self.installation.is_none() {
                 self.exit_allowed = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 return;
@@ -420,7 +431,7 @@ impl IdeShell {
             ui.heading("Close Buture Code");
             ui.label(format!(
                 "{} document(s) with unsaved changes",
-                self.editors.dirty_paths().len()
+                self.editors.dirty_count()
             ));
             if self.installation.is_some() {
                 ui.label("Wait for the active installation to finish before closing.");
@@ -466,6 +477,10 @@ impl IdeShell {
             }
             Action::Doctor => self.open_doctor(),
             Action::LanguageServers => self.open_language(),
+            Action::Format(selection) => {
+                self.formatting
+                    .request(&self.editors, self.root.as_deref(), selection)
+            }
             Action::LanguageFeature(id) => {
                 let kind = match id {
                     "completion" => buture_lsp::features::Kind::Completion,
@@ -684,6 +699,7 @@ impl IdeShell {
         self.show_toolchains = false;
     }
     pub fn open_toolchain_manager(&mut self) {
+        self.formatting.visible = false;
         self.show_language = false;
         self.show_shortcuts = false;
         self.show_doctor = false;
@@ -747,6 +763,7 @@ impl IdeShell {
         }
     }
     pub fn show(&mut self, ctx: &Context) {
+        self.editors.format_on_save = self.settings.get("Editor.formatOnSave") == Some("true");
         self.terminal.poll();
         self.tasks.poll();
         if let Some(store) = &self.shortcut_store {
@@ -770,7 +787,7 @@ impl IdeShell {
         }
         if ctx.input(|i| i.viewport().close_requested())
             && !self.exit_allowed
-            && (!self.editors.dirty_paths().is_empty()
+            && (self.editors.has_dirty()
                 || !self.editors.saving.is_empty()
                 || self.installation.is_some()
                 || self.terminal.running()
@@ -785,6 +802,12 @@ impl IdeShell {
         self.search.review(ctx, &self.editors);
         if let Some(error) = self.editors.poll() {
             self.message = error;
+        }
+        self.formatting
+            .collect_saves(&mut self.editors, self.root.as_deref());
+        self.formatting.poll(&mut self.editors);
+        if let Some(message) = self.formatting.take_report() {
+            self.message = message;
         }
         self.language.poll(&mut self.editors);
         if let Some(kind) = self.language.intelligence.requested() {
@@ -882,6 +905,7 @@ impl IdeShell {
                             .send(buture_settings::Request::LoadWorkspace(root.clone()));
                     }
                     if self.root.as_ref() != Some(&root) {
+                        self.formatting.reset_trust();
                         self.language.reset_workspace();
                         self.preview = None;
                         self.editors.set_workspace(root.clone());
@@ -917,6 +941,7 @@ impl IdeShell {
         self.handle_shortcuts(ctx);
         self.command_palette(ctx);
         self.quick_picker(ctx);
+        self.formatting.review(ctx);
         self.intelligence_popup(ctx);
         self.workspace_dialogs(ctx);
         self.exit_dialog(ctx);
@@ -1064,7 +1089,7 @@ impl IdeShell {
                     &theme,
                     &mut self.active,
                 );
-                if self.active != 7 { self.show_shortcuts = false; }
+                if self.active != 7 { self.show_shortcuts = false;self.formatting.visible=false; }
                 let handle = Rect::from_min_max(
                     pos2(layout.sidebar.right() - 3.0, layout.sidebar.top()),
                     pos2(layout.sidebar.right() + 3.0, layout.sidebar.bottom()),
@@ -1133,11 +1158,14 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                                             );
                                         }
                                     }
+                                } else if category == "Editor" {
+                                    if ui.button("Formatting").clicked(){self.formatting.visible=true;self.show_language=false;self.show_shortcuts=false;}
                                 } else if category == "Languages" {
                                     if ui.button("Language Servers").clicked() { self.open_language(); }
                                 } else if category == "Development" || category == "Toolchains" {
                                     if ui.button("Toolchains").clicked() {
                                         self.show_shortcuts = false;
+                                        self.formatting.visible=false;
                                         self.show_toolchains = true;
                                     }
                                 } else {
@@ -1150,7 +1178,11 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                     sidebar(&mut side, &theme, self.active);
                 }
                 let mut center = region(ui, "editor", layout.editor.shrink(theme.spacing.md));
-                if self.show_language && self.active==7 {
+                if self.formatting.visible && self.active==7 {
+                    let mut on_save=self.settings.get("Editor.formatOnSave")==Some("true");
+                    if let Some(value)=self.formatting.show(&mut center,&theme,&self.editors,self.root.as_deref(),&mut on_save){self.save_preference("Editor.formatOnSave",if value{"true"}else{"false"});}
+                    self.editors.format_on_save=on_save;
+                } else if self.show_language && self.active==7 {
                     self.language.show(&mut center, &theme, self.root.as_deref());
                 } else if self.show_shortcuts {
                     if let Some(action) = self.shortcuts.show(&mut center, &theme, &self.commands, &self.keymap) {

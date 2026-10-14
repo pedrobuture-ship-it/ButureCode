@@ -188,6 +188,8 @@ impl Keymap {
             ("panel.toggle", "Primary+J"),
             ("inspector.toggle", "Primary+Alt+I"),
             ("editor.save", "Primary+S"),
+            ("format.document", "Primary+Shift+I"),
+            ("format.selection", "Primary+Alt+Shift+I"),
             ("language.completion", "Primary+Space"),
             ("language.definition", "F12"),
             ("language.references", "Shift+F12"),

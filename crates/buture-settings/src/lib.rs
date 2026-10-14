@@ -67,8 +67,9 @@ impl From<io::Error> for SettingsError {
 pub struct Layer {
     values: BTreeMap<String, String>,
 }
-const SCHEMA: [(&str, &str); 8] = [
+const SCHEMA: [(&str, &str); 9] = [
     ("Appearance.effects", "Full"),
+    ("Editor.formatOnSave", "false"),
     ("Appearance.inspector", "true"),
     ("Appearance.panel", "true"),
     ("Files.previewLimitKiB", "1024"),
@@ -182,7 +183,8 @@ pub struct Settings {
 impl Settings {
     pub fn get(&self, key: &str) -> Option<&str> {
         // Workspace content cannot complete onboarding or opt into private features.
-        let local = if key.starts_with("Development.")
+        let local = if key == "Editor.formatOnSave"
+            || key.starts_with("Development.")
             || key.starts_with("Privacy.")
             || key.starts_with("AI.")
         {
@@ -278,6 +280,20 @@ pub mod keybindings;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn workspace_cannot_enable_format_on_save() {
+        let mut settings = Settings::default();
+        settings
+            .workspace
+            .set("Editor.formatOnSave", "true")
+            .expect("fixture");
+        assert_eq!(settings.get("Editor.formatOnSave"), Some("false"));
+        settings
+            .user
+            .set("Editor.formatOnSave", "true")
+            .expect("user choice");
+        assert_eq!(settings.get("Editor.formatOnSave"), Some("true"));
+    }
     #[test]
     fn layers_validate_and_preserve_privacy() {
         let user =
