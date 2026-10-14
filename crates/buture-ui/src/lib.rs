@@ -18,5 +18,6 @@ pub mod quick_open;
 pub mod search;
 pub mod shortcuts;
 pub mod syntax;
+pub mod tasks;
 pub mod terminal;
 pub mod toolchains;

@@ -569,6 +569,10 @@ dependencies = [
 [[package]]
 name = "buture-tasks"
 version = "0.1.0"
+dependencies = [
+ "buture-project",
+ "serde_json",
+]
 
 [[package]]
 name = "buture-terminal"
@@ -592,6 +596,7 @@ dependencies = [
  "buture-project",
  "buture-search",
  "buture-settings",
+ "buture-tasks",
  "buture-terminal",
  "buture-toolchains",
  "buture-workspace",

@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 19] = [
+const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 20] = [
     ("full", VisualEffects::Full, [1440.0, 900.0], true, true),
     (
         "reduced",
@@ -65,6 +65,7 @@ const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 19] = [
         false,
         true,
     ),
+    ("tasks", VisualEffects::Full, [1440.0, 900.0], false, false),
     (
         "overview",
         VisualEffects::Full,
@@ -172,6 +173,7 @@ impl eframe::App for Capture {
                 image.size[1]
             );
             if self.single_case {
+                self.index = CASES.len();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 return;
             }
@@ -249,6 +251,10 @@ impl eframe::App for Capture {
             && !self.case_started
         {
             self.shell.preview_terminal();
+            self.case_started = true;
+        }
+        if self.single_case && CASES[self.index].0 == "tasks" && !self.case_started {
+            self.shell.preview_tasks();
             self.case_started = true;
         }
         self.shell.show(ctx);

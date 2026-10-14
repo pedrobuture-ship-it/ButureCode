@@ -6,7 +6,11 @@ rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "Future build, run and test task execution."
+description = "Reviewed build, run and test plans."
 
 [lints]
 workspace = true
+
+[dependencies]
+buture-project = { path = "../buture-project" }
+serde_json = "=1.0.154"

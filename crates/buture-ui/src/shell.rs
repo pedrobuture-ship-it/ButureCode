@@ -93,6 +93,7 @@ pub struct IdeShell {
     search: crate::search::SearchPanel,
     palette: crate::palette::Palette,
     quick_open: crate::quick_open::QuickOpen,
+    tasks: crate::tasks::Tasks,
     terminal: crate::terminal::Terminals,
     terminal_open: bool,
     commands: buture_core::commands::CommandRegistry,
@@ -163,6 +164,7 @@ impl IdeShell {
             search: Default::default(),
             palette: Default::default(),
             quick_open: Default::default(),
+            tasks: Default::default(),
             terminal: Default::default(),
             terminal_open: false,
             commands: buture_core::commands::CommandRegistry::standard(),
@@ -283,6 +285,10 @@ impl IdeShell {
             quick_open: true,
         }
     }
+    pub fn preview_tasks(&mut self) {
+        self.open_workspace(std::env::current_dir().unwrap_or_default());
+        self.active = 3;
+    }
     pub fn preview_terminal(&mut self) {
         self.terminal_open = true;
         self.show_bottom_panel = true;
@@ -392,6 +398,9 @@ impl IdeShell {
             }
             if self.terminal.running() {
                 ui.label("Closing terminates active terminal shell sessions.");
+            }
+            if self.tasks.running() {
+                ui.label("Closing cancels the active task (direct child).");
             }
             let idle = self.editors.saving.is_empty() && self.installation.is_none();
             if ui
@@ -652,6 +661,7 @@ impl IdeShell {
             || !self.editors.loading.is_empty()
             || self.search.busy()
             || self.quick_open.busy()
+            || self.tasks.busy()
     }
     /// Preview first run without reading or writing personal preferences.
     pub fn preview_onboarding(&mut self) {
@@ -684,6 +694,7 @@ impl IdeShell {
     }
     pub fn show(&mut self, ctx: &Context) {
         self.terminal.poll();
+        self.tasks.poll();
         if let Some(store) = &self.shortcut_store {
             while let Ok(event) = store.events.try_recv() {
                 match event {
@@ -708,7 +719,8 @@ impl IdeShell {
             && (!self.editors.dirty_paths().is_empty()
                 || !self.editors.saving.is_empty()
                 || self.installation.is_some()
-                || self.terminal.running())
+                || self.terminal.running()
+                || self.tasks.running())
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.exit_review = true;
@@ -723,6 +735,9 @@ impl IdeShell {
         if let Some(scan) = &self.project_scan
             && let Ok(detection) = scan.events.try_recv()
         {
+            if let Some(root) = &self.root {
+                self.tasks.detect(root.clone(), detection.clone());
+            }
             self.project = Some(detection);
             self.project_scan = None;
         }
@@ -1079,6 +1094,8 @@ if self.show_doctor && ui.small_button("Editor").clicked(){self.show_doctor=fals
                             match action { crate::shortcuts::Action::Save => store.save(self.shortcuts.text.clone()), crate::shortcuts::Action::Reload => store.reload() }
                         } else { self.shortcuts.error = Some("Profile persistence is disabled in this preview".into()); }
                     }
+                } else if self.active==3 {
+                    self.tasks.show(&mut center, &theme, self.root.as_deref());
                 } else if self.active==1 {
                     if let Some(selected)=self.search.show(&mut center,&theme,self.root.as_ref(),&self.editors) && let Some(root)=&self.root {
                         if let Some(error)=self.editors.open_match(root.clone(),selected.hit.path,selected.hit.bytes,selected.stamp){self.message=error;}self.active=0;
@@ -1701,6 +1718,12 @@ fn sidebar(ui: &mut Ui, theme: &Theme, active: usize) {
         ui.label(
             "Find in the current document or workspace. Results stream as files are searched.",
         );
+        return;
+    }
+    if active == 3 {
+        ui.heading("Run & Debug");
+        ui.separator();
+        ui.label("Select and review a detected task in the workspace.");
         return;
     }
     if active != 0 {
