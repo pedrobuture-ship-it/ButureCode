@@ -5,6 +5,12 @@ Cargo workspace Rust stable, edition 2024, MSRV declarado 1.88. O lockfile fixa 
 ```text
 buture-app → eframe, buture-core, buture-ui
 buture-ui → settings, workspace, toolchains, doctor, project, editor, search, core
+buture-ui → terminal, tasks, lsp, format, git
+buture-terminal → portable-pty, vt100
+buture-tasks → project, serde_json
+buture-lsp → protocol, editor, serde_json
+buture-format → editor, toolchains, toml
+buture-git → toolchains
 buture-doctor → toolchains
 buture-project → serde_json, toml, ignore
 buture-editor → ropey, tree-sitter/grammars, serde_json
@@ -28,4 +34,6 @@ Backdrop interno e cache compartilhado; sem captura de wallpaper do SO ou blur a
 
 `buture-doctor` agrega evidências e diagnósticos; `buture-project` detecta manifests/monorepos; `buture-editor` controla Rope, IO, transações, sessão e parsing incremental; `buture-search` controla consultas, índice e substituições revisadas. Workers coalescem snapshots e rejeitam resultados obsoletos. Views e grupos da UI compartilham buffers, mantendo seleção/scroll próprios. Veja [editor](editor.md).
 
-Prompts 36–95 continuam reservados: não há PTY, task runner, LSP, Git completo, IA ou integrações fictícias. Erros de domínio tipados; `unsafe_code` proibido no código autoral.
+Terminal, tasks, LSP, formatação e Git executam trabalho em workers, com filas e limites de output. LSP usa transporte stdio local em buture-protocol; alterações recebidas têm revisão e proteção contra versões obsoletas. Source Control consulta Git por argv, sem executar comandos via shell. Veja os documentos específicos para os limites de cada domínio.
+
+O código ativo vai até o prompt 44; diff (45) está preservado em patch de retomada. Não há debugger, Memory Inspector, IA ou extensões implementados neste marco. Erros de domínio tipados; `unsafe_code` proibido no código autoral.

@@ -1,0 +1,858 @@
+diff --git c/crates/buture-app/examples/capture_shell.rs i/crates/buture-app/examples/capture_shell.rs
+index 2ab84b8..d0b5aa1 100644
+--- c/crates/buture-app/examples/capture_shell.rs
++++ i/crates/buture-app/examples/capture_shell.rs
+@@ -8,7 +8,7 @@ use std::{
+     time::{Duration, Instant},
+ };
+ 
+-const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 26] = [
++const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 27] = [
+     ("full", VisualEffects::Full, [1440.0, 900.0], true, true),
+     (
+         "reduced",
+@@ -102,6 +102,7 @@ const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 26] = [
+         false,
+         false,
+     ),
++    ("diff", VisualEffects::Full, [1440.0, 900.0], false, false),
+     (
+         "overview",
+         VisualEffects::Full,
+@@ -317,6 +318,17 @@ impl eframe::App for Capture {
+             self.shell.preview_source_control();
+             self.case_started = true;
+         }
++        if self.single_case && CASES[self.index].0 == "diff" && !self.case_started {
++            self.shell.preview_source_control();
++            self.case_started = true;
++        }
++        if self.single_case
++            && CASES[self.index].0 == "diff"
++            && self.since_change.elapsed() > Duration::from_millis(400)
++            && self.since_change.elapsed() < Duration::from_millis(600)
++        {
++            self.shell.preview_diff();
++        }
+         self.shell.show(ctx);
+         if !self.requested
+             && !self.shell.environment_scan_pending()
+diff --git c/crates/buture-git/src/diff.rs i/crates/buture-git/src/diff.rs
+new file mode 100644
+index 0000000..9872f45
+--- /dev/null
++++ i/crates/buture-git/src/diff.rs
+@@ -0,0 +1,409 @@
++//! Unified diff parsing keeps original patch bytes for checked hunk operations.
++use super::{GitError, LIMIT, Repository, args, execute, sensitive, validate_path};
++use std::{
++    io::Read,
++    path::{Path, PathBuf},
++    sync::mpsc,
++};
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum Kind {
++    Context,
++    Added,
++    Removed,
++    Meta,
++}
++#[derive(Debug, Clone)]
++pub struct Line {
++    pub kind: Kind,
++    pub text: String,
++    pub old: Option<usize>,
++    pub new: Option<usize>,
++}
++#[derive(Debug, Clone)]
++pub struct Hunk {
++    pub label: String,
++    pub lines: Vec<Line>,
++    patch: Vec<u8>,
++}
++#[derive(Debug, Clone)]
++pub struct Diff {
++    pub path: PathBuf,
++    pub staged: bool,
++    pub binary: bool,
++    pub hunks: Vec<Hunk>,
++    pub lines: Vec<Line>,
++    header: Vec<u8>,
++    original: Vec<u8>,
++}
++fn numbers(header: &str) -> Option<(usize, usize)> {
++    let mut parts = header.split_whitespace();
++    if parts.next()? != "@@" {
++        return None;
++    }
++    let old = parts
++        .next()?
++        .strip_prefix('-')?
++        .split(',')
++        .next()?
++        .parse()
++        .ok()?;
++    let new = parts
++        .next()?
++        .strip_prefix('+')?
++        .split(',')
++        .next()?
++        .parse()
++        .ok()?;
++    Some((old, new))
++}
++impl Diff {
++    pub fn load(repo: &Repository, path: &Path, staged: bool) -> Result<Self, GitError> {
++        validate_path(path)?;
++        Self::parse(path.into(), staged, repo.diff(Some(path), staged)?)
++    }
++    pub fn parse(path: PathBuf, staged: bool, bytes: Vec<u8>) -> Result<Self, GitError> {
++        if bytes.len() > LIMIT {
++            return Err(GitError::TooLarge);
++        }
++        let binary = bytes.windows(16).any(|w| w == b"Git binary patch")
++            || bytes.starts_with(b"Binary files");
++        let mut header = vec![];
++        let mut hunks = vec![];
++        let mut lines = vec![];
++        let mut current = None::<Hunk>;
++        let (mut old, mut new) = (0usize, 0usize);
++        for raw in bytes.split_inclusive(|b| *b == b'\n') {
++            if raw.starts_with(b"@@ ") {
++                if let Some(hunk) = current.take() {
++                    hunks.push(hunk);
++                }
++                let label = String::from_utf8_lossy(raw)
++                    .trim_end()
++                    .chars()
++                    .take(1024)
++                    .collect::<String>();
++                (old, new) = numbers(&label).ok_or(GitError::InvalidPath)?;
++                current = Some(Hunk {
++                    label,
++                    lines: vec![],
++                    patch: raw.to_vec(),
++                });
++            } else if let Some(hunk) = &mut current {
++                hunk.patch.extend(raw);
++                let kind = match raw.first() {
++                    Some(b' ') => Kind::Context,
++                    Some(b'+') => Kind::Added,
++                    Some(b'-') => Kind::Removed,
++                    _ => Kind::Meta,
++                };
++                let text = String::from_utf8_lossy(raw.get(1..).unwrap_or(raw))
++                    .trim_end_matches('\n')
++                    .to_owned();
++                let line = Line {
++                    kind,
++                    text,
++                    old: if matches!(kind, Kind::Context | Kind::Removed) {
++                        Some(old)
++                    } else {
++                        None
++                    },
++                    new: if matches!(kind, Kind::Context | Kind::Added) {
++                        Some(new)
++                    } else {
++                        None
++                    },
++                };
++                if line.old.is_some() {
++                    old = old.checked_add(1).ok_or(GitError::TooLarge)?;
++                }
++                if line.new.is_some() {
++                    new = new.checked_add(1).ok_or(GitError::TooLarge)?;
++                }
++                hunk.lines.push(line.clone());
++                lines.push(line);
++                if lines.len() > 100000 {
++                    return Err(GitError::TooLarge);
++                }
++            } else {
++                header.extend(raw);
++            }
++        }
++        if let Some(hunk) = current {
++            hunks.push(hunk);
++        }
++        Ok(Self {
++            path,
++            staged,
++            binary,
++            hunks,
++            lines,
++            header,
++            original: bytes,
++        })
++    }
++    pub fn review_hunk(&self, repo: &Repository, index: usize) -> Result<HunkPlan, GitError> {
++        if self.binary || sensitive(&self.path) {
++            return Err(GitError::InvalidPath);
++        }
++        let hunk = self.hunks.get(index).ok_or(GitError::InvalidPath)?;
++        let mut patch = self.header.clone();
++        patch.extend(&hunk.patch);
++        let head = repo.head()?;
++        let plan = HunkPlan {
++            repo: repo.clone(),
++            path: self.path.clone(),
++            staged: self.staged,
++            expected: self.original.clone(),
++            patch,
++            head,
++        };
++        plan.check()?;
++        Ok(plan)
++    }
++}
++#[derive(Debug, Clone)]
++pub struct HunkPlan {
++    repo: Repository,
++    path: PathBuf,
++    staged: bool,
++    expected: Vec<u8>,
++    patch: Vec<u8>,
++    head: Option<String>,
++}
++pub struct ConfirmedHunk(HunkPlan);
++impl HunkPlan {
++    fn check(&self) -> Result<(), GitError> {
++        if self.repo.head()? != self.head
++            || self.repo.diff(Some(&self.path), self.staged)? != self.expected
++        {
++            return Err(GitError::Conflict);
++        }
++        let mut values = args(&["apply", "--cached", "--check", "--whitespace=nowarn"]);
++        if self.staged {
++            values.push("--reverse".into());
++        }
++        execute(
++            &self.repo.executable,
++            &self.repo.root,
++            &values,
++            Some(self.patch.clone()),
++        )?;
++        Ok(())
++    }
++    pub fn confirm(self) -> ConfirmedHunk {
++        ConfirmedHunk(self)
++    }
++}
++impl ConfirmedHunk {
++    pub fn execute(self) -> mpsc::Receiver<Result<String, GitError>> {
++        let (tx, rx) = mpsc::channel();
++        std::thread::spawn(move || {
++            let result = (|| {
++                self.0.check()?;
++                let mut values = args(&["apply", "--cached", "--whitespace=nowarn"]);
++                if self.0.staged {
++                    values.push("--reverse".into());
++                }
++                execute(
++                    &self.0.repo.executable,
++                    &self.0.repo.root,
++                    &values,
++                    Some(self.0.patch),
++                )?;
++                Ok(if self.0.staged {
++                    "Unstaged hunk; worktree preserved"
++                } else {
++                    "Staged hunk; worktree preserved"
++                }
++                .into())
++            })();
++            let _ = tx.send(result);
++        });
++        rx
++    }
++}
++fn content(repo: &Repository, path: &Path) -> Result<Option<Vec<u8>>, GitError> {
++    let target = repo.root.join(path);
++    match std::fs::symlink_metadata(&target) {
++        Ok(meta) => {
++            if meta.file_type().is_symlink()
++                || !meta.is_file()
++                || !std::fs::canonicalize(&target)?.starts_with(&repo.root)
++            {
++                return Err(GitError::InvalidPath);
++            }
++            let mut bytes = vec![];
++            std::fs::File::open(target)?
++                .take(LIMIT as u64 + 1)
++                .read_to_end(&mut bytes)?;
++            if bytes.len() > LIMIT {
++                return Err(GitError::TooLarge);
++            }
++            Ok(Some(bytes))
++        }
++        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
++        Err(e) => Err(e.into()),
++    }
++}
++#[derive(Debug, Clone)]
++pub struct DiscardPlan {
++    repo: Repository,
++    pub path: PathBuf,
++    worktree: Option<Vec<u8>>,
++    index: Vec<u8>,
++}
++pub struct ConfirmedDiscard(DiscardPlan);
++impl DiscardPlan {
++    pub fn review(repo: &Repository, path: &Path) -> Result<Self, GitError> {
++        validate_path(path)?;
++        let worktree = content(repo, path)?;
++        let mut spec = std::ffi::OsString::from(":0:");
++        spec.push(path.as_os_str());
++        let index = execute(
++            &repo.executable,
++            &repo.root,
++            &["rev-parse".into(), "--verify".into(), spec],
++            None,
++        )?;
++        Ok(Self {
++            repo: repo.clone(),
++            path: path.into(),
++            worktree,
++            index,
++        })
++    }
++    pub fn confirm(self) -> ConfirmedDiscard {
++        ConfirmedDiscard(self)
++    }
++}
++impl ConfirmedDiscard {
++    pub fn execute(self) -> mpsc::Receiver<Result<String, GitError>> {
++        let (tx, rx) = mpsc::channel();
++        std::thread::spawn(move || {
++            let result = (|| {
++                let checked = DiscardPlan::review(&self.0.repo, &self.0.path)?;
++                if checked.worktree != self.0.worktree || checked.index != self.0.index {
++                    return Err(GitError::Conflict);
++                }
++                let mut values = args(&["restore", "--worktree", "--"]);
++                values.push(self.0.path.as_os_str().into());
++                execute(&self.0.repo.executable, &self.0.repo.root, &values, None)?;
++                Ok("Discarded reviewed worktree changes; index preserved".into())
++            })();
++            let _ = tx.send(result);
++        });
++        rx
++    }
++}
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn parser_preserves_hunks_and_coordinates() {
++        let patch=b"diff --git a/a b/a\nindex 123..456 100644\n--- a/a\n+++ b/a\n@@ -1,2 +1,2 @@\n keep\n-old\n+new\n\\ No newline at end of file\n".to_vec();
++        let diff = Diff::parse("a".into(), false, patch).expect("diff");
++        assert_eq!(diff.hunks.len(), 1);
++        assert_eq!(diff.lines[1].old, Some(2));
++        assert_eq!(diff.lines[2].new, Some(2));
++        assert_eq!(diff.lines[3].kind, Kind::Meta);
++    }
++    #[test]
++    fn native_hunks_and_discard_guard_concurrent_changes() {
++        let Ok(owner) = Repository::discover(&std::env::current_dir().expect("cwd")) else {
++            return;
++        };
++        let Ok((name, email)) = owner.identity() else {
++            return;
++        };
++        let root = std::env::temp_dir().join(format!("buture-git-diff-{}", std::process::id()));
++        std::fs::create_dir_all(&root).expect("fixture");
++        execute(
++            &owner.executable,
++            &root,
++            &args(&["init", "-b", "main"]),
++            None,
++        )
++        .expect("init");
++        execute(
++            &owner.executable,
++            &root,
++            &args(&["config", "user.name", &name]),
++            None,
++        )
++        .expect("owner");
++        execute(
++            &owner.executable,
++            &root,
++            &args(&["config", "user.email", &email]),
++            None,
++        )
++        .expect("email");
++        let repo = Repository::discover(&root).expect("repo");
++        let path = PathBuf::from("source.txt");
++        let original = (0..30).map(|n| format!("line {n}\n")).collect::<String>();
++        std::fs::write(root.join(&path), &original).expect("source");
++        let wait = |plan: super::super::Plan| {
++            plan.confirm()
++                .execute()
++                .recv_timeout(std::time::Duration::from_secs(5))
++                .expect("event")
++                .expect("operation")
++        };
++        wait(
++            repo.review(super::super::Operation::Stage(vec![path.clone()]))
++                .expect("review"),
++        );
++        wait(
++            repo.review(super::super::Operation::Commit(
++                "[test] diff fixture".into(),
++            ))
++            .expect("review"),
++        );
++        let changed = original
++            .replace("line 1\n", "changed one\n")
++            .replace("line 25\n", "changed twenty five\n");
++        std::fs::write(root.join(&path), &changed).expect("edit");
++        let diff = Diff::load(&repo, &path, false).expect("diff");
++        assert_eq!(diff.hunks.len(), 2);
++        diff.review_hunk(&repo, 0)
++            .expect("hunk")
++            .confirm()
++            .execute()
++            .recv_timeout(std::time::Duration::from_secs(5))
++            .expect("event")
++            .expect("stage hunk");
++        assert!(
++            String::from_utf8(repo.diff(Some(&path), true).expect("staged"))
++                .expect("utf8")
++                .contains("changed one")
++        );
++        assert_eq!(
++            std::fs::read_to_string(root.join(&path)).expect("worktree"),
++            changed
++        );
++        let staged = Diff::load(&repo, &path, true).expect("staged");
++        staged
++            .review_hunk(&repo, 0)
++            .expect("review")
++            .confirm()
++            .execute()
++            .recv_timeout(std::time::Duration::from_secs(5))
++            .expect("event")
++            .expect("unstage");
++        let discard = DiscardPlan::review(&repo, &path).expect("discard review");
++        std::fs::write(root.join(&path), "owner newer edit").expect("owner edit");
++        assert!(matches!(
++            discard
++                .confirm()
++                .execute()
++                .recv_timeout(std::time::Duration::from_secs(5))
++                .expect("event"),
++            Err(GitError::Conflict)
++        ));
++        assert_eq!(
++            std::fs::read_to_string(root.join(&path)).expect("file"),
++            "owner newer edit"
++        );
++        std::fs::remove_dir_all(root).expect("cleanup");
++    }
++}
+diff --git c/crates/buture-git/src/lib.rs i/crates/buture-git/src/lib.rs
+index 1f90b6a..5031da0 100644
+--- c/crates/buture-git/src/lib.rs
++++ i/crates/buture-git/src/lib.rs
+@@ -762,3 +762,5 @@ mod tests {
+         std::fs::remove_dir_all(root).expect("cleanup");
+     }
+ }
++
++pub mod diff;
+diff --git c/crates/buture-ui/src/diff_view.rs i/crates/buture-ui/src/diff_view.rs
+new file mode 100644
+index 0000000..6802740
+--- /dev/null
++++ i/crates/buture-ui/src/diff_view.rs
+@@ -0,0 +1,248 @@
++//! Solid inline/side-by-side diff; checked hunk transactions leave the worktree untouched.
++use crate::Theme;
++use buture_git::{
++    GitError, Repository,
++    diff::{Diff, DiscardPlan, HunkPlan, Kind},
++};
++use std::{
++    path::{Path, PathBuf},
++    sync::{Arc, mpsc},
++};
++enum Prepared {
++    Hunk(HunkPlan),
++    Discard(DiscardPlan),
++}
++#[derive(Default)]
++pub struct DiffView {
++    pub open: bool,
++    repo: Option<Repository>,
++    diff: Option<Arc<Diff>>,
++    loading: Option<mpsc::Receiver<Result<Diff, GitError>>>,
++    planning: Option<mpsc::Receiver<Result<Prepared, GitError>>>,
++    operation: Option<mpsc::Receiver<Result<String, GitError>>>,
++    discard: Option<DiscardPlan>,
++    consent: bool,
++    side_by_side: bool,
++    pub message: String,
++    changed: bool,
++}
++impl DiffView {
++    pub fn load(&mut self, repo: Repository, path: PathBuf, staged: bool) {
++        self.open = true;
++        self.repo = Some(repo.clone());
++        self.diff = None;
++        self.discard = None;
++        let (tx, rx) = mpsc::channel();
++        self.loading = Some(rx);
++        std::thread::spawn(move || {
++            let _ = tx.send(Diff::load(&repo, &path, staged));
++        });
++    }
++    pub fn busy(&self) -> bool {
++        self.loading.is_some() || self.planning.is_some() || self.operation.is_some()
++    }
++    pub fn running(&self) -> bool {
++        self.operation.is_some()
++    }
++    pub fn take_changed(&mut self) -> bool {
++        std::mem::take(&mut self.changed)
++    }
++    pub fn poll(&mut self, trusted: bool) {
++        let loaded = self.loading.as_ref().and_then(|r| r.try_recv().ok());
++        if let Some(result) = loaded {
++            self.loading = None;
++            match result {
++                Ok(diff) => self.diff = Some(Arc::new(diff)),
++                Err(e) => self.message = e.to_string(),
++            }
++        }
++        let prepared = self.planning.as_ref().and_then(|r| r.try_recv().ok());
++        if let Some(result) = prepared {
++            self.planning = None;
++            match result {
++                Ok(Prepared::Hunk(plan)) if trusted => {
++                    self.operation = Some(plan.confirm().execute())
++                }
++                Ok(Prepared::Discard(plan)) if trusted => {
++                    self.discard = Some(plan);
++                    self.consent = false;
++                }
++                Ok(_) => self.message = "Repository trust changed; operation cancelled".into(),
++                Err(e) => self.message = e.to_string(),
++            }
++        }
++        let result = self.operation.as_ref().and_then(|r| r.try_recv().ok());
++        if let Some(result) = result {
++            self.operation = None;
++            self.message = match result {
++                Ok(message) => {
++                    self.changed = true;
++                    message
++                }
++                Err(e) => e.to_string(),
++            };
++            if let (Some(repo), Some(diff)) = (&self.repo, &self.diff) {
++                self.load(repo.clone(), diff.path.clone(), diff.staged);
++            }
++        }
++    }
++    pub fn review(&mut self, ctx: &egui::Context, trusted: bool, dirty: &[PathBuf]) {
++        let Some(plan) = &self.discard else {
++            return;
++        };
++        let mut apply = false;
++        let mut cancel = false;
++        let blocked = dirty.contains(&plan_path(self.repo.as_ref(), &plan.path));
++        egui::Modal::new(egui::Id::new("discard-diff")).show(ctx,|ui|{ui.heading("Discard worktree changes");ui.label(plan.path.display().to_string());ui.label("Restores the entire tracked file from the index. Unsaved editor buffers are blocked; changes made after this review cause a conflict.");ui.checkbox(&mut self.consent,"I confirm discarding the reviewed worktree changes");apply=ui.add_enabled(trusted&&self.consent&&!blocked,egui::Button::new("Discard reviewed file changes")).clicked();cancel=ui.button("Cancel").clicked();});
++        if apply && let Some(plan) = self.discard.take() {
++            self.operation = Some(plan.confirm().execute());
++        }
++        if cancel {
++            self.discard = None;
++        }
++    }
++    pub fn show(
++        &mut self,
++        ui: &mut egui::Ui,
++        theme: &Theme,
++        trusted: bool,
++        dirty: &[PathBuf],
++    ) -> Option<PathBuf> {
++        self.poll(trusted);
++        let mut open_file = None;
++        ui.horizontal(|ui| {
++            ui.heading("Diff");
++            ui.checkbox(&mut self.side_by_side, "Side by side");
++            if ui.button("Back to changes").clicked() {
++                self.open = false;
++            }
++        });
++        ui.label(&self.message);
++        if self.busy() {
++            ui.spinner();
++        }
++        let Some(diff) = self.diff.clone() else {
++            return None;
++        };
++        ui.horizontal(|ui| {
++            ui.label(diff.path.display().to_string());
++            ui.label(if diff.staged {
++                "Staged → HEAD"
++            } else {
++                "Worktree → Index"
++            });
++            if ui.button("Open source").clicked() {
++                open_file = Some(plan_path(self.repo.as_ref(), &diff.path));
++            }
++        });
++        if diff.binary {
++            ui.label("Binary diff: hunk editing is unavailable.");
++            return open_file;
++        }
++        if diff.hunks.is_empty() {
++            ui.label(
++                "No textual hunks. Untracked files can be staged as a whole in Source Control.",
++            );
++        }
++        let mut hunk = None;
++        let mut discard = false;
++        ui.horizontal_wrapped(|ui| {
++            for (index, part) in diff.hunks.iter().enumerate() {
++                if ui
++                    .add_enabled(
++                        trusted && !self.busy(),
++                        egui::Button::new(format!(
++                            "{} hunk {}",
++                            if diff.staged { "Unstage" } else { "Stage" },
++                            index + 1
++                        )),
++                    )
++                    .on_hover_text(&part.label)
++                    .clicked()
++                {
++                    hunk = Some(index);
++                }
++            }
++            if !diff.staged
++                && ui
++                    .add_enabled(
++                        trusted
++                            && !self.busy()
++                            && !dirty.contains(&plan_path(self.repo.as_ref(), &diff.path)),
++                        egui::Button::new("Discard file…"),
++                    )
++                    .clicked()
++            {
++                discard = true;
++            }
++        });
++        if let Some(repo) = self.repo.clone() {
++            if let Some(index) = hunk {
++                let diff = diff.clone();
++                let (tx, rx) = mpsc::channel();
++                self.planning = Some(rx);
++                std::thread::spawn(move || {
++                    let _ = tx.send(diff.review_hunk(&repo, index).map(Prepared::Hunk));
++                });
++            } else if discard {
++                let path = diff.path.clone();
++                let (tx, rx) = mpsc::channel();
++                self.planning = Some(rx);
++                std::thread::spawn(move || {
++                    let _ = tx.send(DiscardPlan::review(&repo, &path).map(Prepared::Discard));
++                });
++            }
++        }
++        egui::ScrollArea::both().show_rows(ui, 22.0, diff.lines.len(), |ui, rows| {
++            for index in rows {
++                let line = &diff.lines[index];
++                let color = match line.kind {
++                    Kind::Added => theme.semantic.success,
++                    Kind::Removed => theme.semantic.error,
++                    _ => theme.text.secondary,
++                };
++                let text = line.text.chars().take(16000).collect::<String>();
++                let old = line.old.map(|n| n.to_string()).unwrap_or_default();
++                let new = line.new.map(|n| n.to_string()).unwrap_or_default();
++                if self.side_by_side {
++                    ui.columns(2, |cols| {
++                        if line.kind != Kind::Added {
++                            cols[0].add(
++                                egui::Label::new(
++                                    egui::RichText::new(format!("{old:>5} {text}"))
++                                        .monospace()
++                                        .color(color),
++                                )
++                                .wrap_mode(egui::TextWrapMode::Extend),
++                            );
++                        }
++                        if line.kind != Kind::Removed {
++                            cols[1].add(
++                                egui::Label::new(
++                                    egui::RichText::new(format!("{new:>5} {text}"))
++                                        .monospace()
++                                        .color(color),
++                                )
++                                .wrap_mode(egui::TextWrapMode::Extend),
++                            );
++                        }
++                    });
++                } else {
++                    ui.add(
++                        egui::Label::new(
++                            egui::RichText::new(format!("{old:>5} {new:>5} {text}"))
++                                .monospace()
++                                .color(color),
++                        )
++                        .wrap_mode(egui::TextWrapMode::Extend),
++                    );
++                }
++            }
++        });
++        open_file
++    }
++}
++fn plan_path(repo: Option<&Repository>, path: &Path) -> PathBuf {
++    repo.map(|r| r.root.join(path))
++        .unwrap_or_else(|| path.into())
++}
+diff --git c/crates/buture-ui/src/lib.rs i/crates/buture-ui/src/lib.rs
+index b639f7f..384b082 100644
+--- c/crates/buture-ui/src/lib.rs
++++ i/crates/buture-ui/src/lib.rs
+@@ -8,6 +8,7 @@ pub use theme::Theme;
+ pub mod shell;
+ pub use shell::IdeShell;
+ 
++pub mod diff_view;
+ pub mod doctor;
+ pub mod editor;
+ pub mod explorer;
+diff --git c/crates/buture-ui/src/shell.rs i/crates/buture-ui/src/shell.rs
+index da4ec98..112038c 100644
+--- c/crates/buture-ui/src/shell.rs
++++ i/crates/buture-ui/src/shell.rs
+@@ -299,6 +299,9 @@ impl IdeShell {
+             language: self.language.client.is_some() && !self.language.capabilities.is_null(),
+         }
+     }
++    pub fn preview_diff(&mut self) {
++        self.source_control.preview_diff();
++    }
+     pub fn preview_source_control(&mut self) {
+         self.open_workspace(std::env::current_dir().unwrap_or_default());
+         self.active = 2;
+@@ -966,7 +969,7 @@ impl IdeShell {
+         self.handle_shortcuts(ctx);
+         self.command_palette(ctx);
+         self.quick_picker(ctx);
+-        self.source_control.review(ctx);
++        self.source_control.review(ctx, &self.editors.dirty_paths());
+         self.formatting.review(ctx);
+         self.intelligence_popup(ctx);
+         self.workspace_dialogs(ctx);
+diff --git c/crates/buture-ui/src/source_control.rs i/crates/buture-ui/src/source_control.rs
+index 35b348f..7c29b30 100644
+--- c/crates/buture-ui/src/source_control.rs
++++ i/crates/buture-ui/src/source_control.rs
+@@ -9,6 +9,7 @@ use std::{
+ type ScanResult = Result<(Repository, Status), GitError>;
+ #[derive(Default)]
+ pub struct SourceControl {
++    diff: crate::diff_view::DiffView,
+     workspace: Option<PathBuf>,
+     pub repository: Option<Repository>,
+     pub status: Option<Status>,
+@@ -26,7 +27,17 @@ pub struct SourceControl {
+     refreshed: Option<Instant>,
+ }
+ impl SourceControl {
++    pub fn preview_diff(&mut self) {
++        if let Some(repo) = &self.repository
++            && let Some(status) = &self.status
++            && let Some(change) = status.changes.iter().find(|c| c.index != '?')
++        {
++            self.diff
++                .load(repo.clone(), change.path.clone(), change.staged());
++        }
++    }
+     pub fn set_workspace(&mut self, root: PathBuf) {
++        self.diff = Default::default();
+         self.scan = None;
+         self.planning = None;
+         self.workspace = Some(root);
+@@ -52,10 +63,13 @@ impl SourceControl {
+         });
+     }
+     pub fn running(&self) -> bool {
+-        self.operation.is_some()
++        self.operation.is_some() || self.diff.running()
+     }
+     pub fn busy(&self) -> bool {
+-        self.scan.is_some() || self.planning.is_some() || self.operation.is_some()
++        self.scan.is_some()
++            || self.planning.is_some()
++            || self.operation.is_some()
++            || self.diff.busy()
+     }
+     pub fn report(&mut self) -> Option<String> {
+         if self.message != self.reported {
+@@ -66,6 +80,10 @@ impl SourceControl {
+         }
+     }
+     pub fn poll(&mut self, visible: bool) {
++        self.diff.poll(self.trusted);
++        if self.diff.take_changed() {
++            self.refresh();
++        }
+         let scanned = self.scan.as_ref().and_then(|r| r.try_recv().ok());
+         if let Some(result) = scanned {
+             self.scan = None;
+@@ -155,7 +173,8 @@ impl SourceControl {
+             let _ = tx.send(repo.review(operation));
+         });
+     }
+-    pub fn review(&mut self, ctx: &egui::Context) {
++    pub fn review(&mut self, ctx: &egui::Context, dirty: &[PathBuf]) {
++        self.diff.review(ctx, self.trusted, dirty);
+         let Some(plan) = &self.review else {
+             return;
+         };
+@@ -186,6 +205,9 @@ impl SourceControl {
+         }
+     }
+     pub fn show(&mut self, ui: &mut egui::Ui, theme: &Theme, dirty: &[PathBuf]) -> Option<PathBuf> {
++        if self.diff.open {
++            return self.diff.show(ui, theme, self.trusted, dirty);
++        }
+         ui.horizontal(|ui| {
+             ui.heading("Source Control");
+             if ui
+@@ -210,6 +232,7 @@ impl SourceControl {
+         );
+         let can = self.trusted && !self.busy();
+         let mut selected = None;
++        let mut opened_diff = None;
+         let mut request = None;
+         let Some(status) = &self.status else {
+             return None;
+@@ -320,6 +343,9 @@ impl SourceControl {
+                                     change.path.display()
+                                 );
+                                 if ui.add(egui::Button::new(label).frame(false)).clicked() {
++                                    opened_diff = Some((change.path.clone(), staged));
++                                }
++                                if ui.button("Open").clicked() {
+                                     selected = Some(repo.root.join(&change.path));
+                                 }
+                                 if ui
+@@ -344,6 +370,9 @@ impl SourceControl {
+                     });
+             }
+         });
++        if let Some((path, staged)) = opened_diff {
++            self.diff.load(repo, path, staged);
++        }
+         if let Some(operation) = request {
+             self.request(operation, dirty);
+         }

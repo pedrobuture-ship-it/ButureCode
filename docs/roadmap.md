@@ -1,6 +1,6 @@
 # Roadmap
 
-Pedro Buture ampliou o ciclo até o prompt 35. Prompts 01–05 já estavam concluídos. O avanço mantém commits por etapa.
+Pedro Buture ampliou o ciclo até o prompt 50 e depois pediu uma pausa com retomada no prompt 45. Prompts 01–05 já estavam concluídos. O avanço mantém commits por etapa.
 
 1. Bootstrap e arquitetura de workspace.
 2. Regras de autoria e desenvolvimento.
@@ -39,6 +39,16 @@ Pedro Buture ampliou o ciclo até o prompt 35. Prompts 01–05 já estavam concl
 34. Quick Open fuzzy com índice sob demanda.
 35. Keybindings por SO, overrides, conflitos e chords.
 
-Etapas implementadas com limites registrados em [marco 35](milestone-35.md). A leitura de `.git/HEAD` apresenta a branch; não implementa o domínio Git. Build/Test/Run/Terminal indisponíveis não são estados simulados.
+36. Terminal PTY, tabs, split, ANSI e entrada/saída reais.
+37. Task runner com dependências, revisão e execução em worker.
+38. Smart Run com detecção de candidatos e escolha explícita.
+39. Cliente LSP stdio, lifecycle e isolamento do loop da UI.
+40. Completion, hover, navegação, rename, symbols e code actions revisadas.
+41. Registry de formatters e format on save habilitado pelo usuário.
+42. Problems Panel com diagnósticos recebidos e navegação.
+43. Domínio Git nativo com planos de operações e identidade configurada.
+44. Source Control com Changes/Staged Changes, branches e revisão de commit.
 
-Parar após o prompt 35 e aguardar novas instruções. Prompts 36–95 não foram antecipados.
+Etapas 01–44 implementadas, com limites nos [marcos 35](milestone-35.md) e [44](milestone-44.md). O prompt 45 foi iniciado, mas permanece pendente de revisão e validação: seu patch está preservado fora da árvore de código ativa.
+
+Próximo: 45 (diff inline/side-by-side, stage/unstage hunk e discard confirmado). Depois, 46 Git Graph, 47 Commit Assistant, 48 Debugger Core, 49 Debugger UI e 50 Memory Inspector. Não antecipar 51–95. A instrução mais recente é parar agora e retomar no 45; consultar [o arquivo de retomada](../RETOMADA-PROMPT-45.md).
