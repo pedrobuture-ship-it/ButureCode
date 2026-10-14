@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 24] = [
+const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 25] = [
     ("full", VisualEffects::Full, [1440.0, 900.0], true, true),
     (
         "reduced",
@@ -87,6 +87,13 @@ const CASES: [(&str, VisualEffects, [f32; 2], bool, bool); 24] = [
         [1440.0, 900.0],
         false,
         false,
+    ),
+    (
+        "problems",
+        VisualEffects::Full,
+        [1440.0, 900.0],
+        false,
+        true,
     ),
     (
         "overview",
@@ -293,6 +300,10 @@ impl eframe::App for Capture {
         }
         if self.single_case && CASES[self.index].0 == "formatting" && !self.case_started {
             self.shell.open_formatting();
+            self.case_started = true;
+        }
+        if self.single_case && CASES[self.index].0 == "problems" && !self.case_started {
+            self.shell.preview_problems();
             self.case_started = true;
         }
         self.shell.show(ctx);

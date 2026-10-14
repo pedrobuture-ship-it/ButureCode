@@ -297,6 +297,11 @@ impl IdeShell {
             language: self.language.client.is_some() && !self.language.capabilities.is_null(),
         }
     }
+    pub fn preview_problems(&mut self) {
+        self.problems_open = true;
+        self.show_bottom_panel = true;
+        self.terminal_open = false;
+    }
     pub fn preview_intelligence(&mut self) {
         self.language
             .intelligence
@@ -1010,7 +1015,7 @@ impl IdeShell {
             self.show_inspector,
             self.show_bottom_panel,
         );
-        if self.terminal_open
+        if (self.terminal_open || self.problems_open)
             && let Some(bottom) = &mut layout.bottom
         {
             let height = ((layout.status.top() - layout.editor.top()) * 0.36).clamp(180.0, 360.0);

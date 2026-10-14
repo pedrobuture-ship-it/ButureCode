@@ -17,6 +17,7 @@ pub mod language;
 pub mod onboarding;
 pub mod overview;
 pub mod palette;
+pub mod problems;
 pub mod quick_open;
 pub mod search;
 pub mod shortcuts;

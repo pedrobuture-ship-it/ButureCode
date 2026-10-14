@@ -5,7 +5,10 @@ use std::{
     path::{Path, PathBuf},
     sync::mpsc,
 };
-pub type DiagnosticRecord = (Vec<buture_lsp::features::Diagnostic>, Option<(u64, u64)>);
+pub type DiagnosticRecord = (
+    std::sync::Arc<Vec<buture_lsp::features::Diagnostic>>,
+    Option<(u64, u64)>,
+);
 #[derive(Default)]
 pub struct Language {
     pub client: Option<Client>,
@@ -13,6 +16,8 @@ pub struct Language {
     pub diagnostics: std::collections::BTreeMap<PathBuf, DiagnosticRecord>,
     pub capabilities: serde_json::Value,
     pub state: String,
+    problems: crate::problems::Problems,
+    diagnostic_revision: u64,
     executable: String,
     consent: bool,
     root: Option<PathBuf>,
@@ -26,6 +31,7 @@ impl Language {
         }
         self.consent = false;
         self.diagnostics.clear();
+        self.diagnostic_revision += 1;
         self.signatures.clear();
     }
     pub fn poll(&mut self, editors: &mut EditorSpace) {
@@ -84,7 +90,9 @@ impl Language {
                                 "Diagnostics cache reached 10,000 items; partial results".into();
                         }
                         if self.diagnostics.len() < 512 || self.diagnostics.contains_key(&path) {
-                            self.diagnostics.insert(path, (items, signature));
+                            self.diagnostics
+                                .insert(path, (std::sync::Arc::new(items), signature));
+                            self.diagnostic_revision += 1;
                         }
                     }
                     Event::Response { .. } | Event::Notification { .. } => {}
@@ -111,48 +119,17 @@ impl Language {
         }
     }
     pub fn show_problems(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         theme: &Theme,
     ) -> Option<buture_lsp::features::Location> {
-        ui.heading("Problems");
-        let items: Vec<_> = self
+        let data = self
             .diagnostics
             .values()
-            .flat_map(|record| record.0.iter())
+            .map(|record| record.0.clone())
             .collect();
-        let mut selected = None;
-        egui::ScrollArea::vertical().show_rows(ui, 24.0, items.len(), |ui, rows| {
-            for index in rows {
-                let item = items[index];
-                let color = match item.severity {
-                    1 => theme.semantic.error,
-                    2 => theme.semantic.warning,
-                    _ => theme.semantic.info,
-                };
-                let row = item.range.start["line"].as_u64().unwrap_or(0) + 1;
-                let column = item.range.start["character"].as_u64().unwrap_or(0) + 1;
-                if ui
-                    .selectable_label(
-                        false,
-                        egui::RichText::new(format!(
-                            "{}:{row}:{column} · {} · {}",
-                            item.path.display(),
-                            item.source,
-                            item.message
-                        ))
-                        .color(color),
-                    )
-                    .clicked()
-                {
-                    selected = Some(buture_lsp::features::Location {
-                        path: item.path.clone(),
-                        range: Some(item.range.clone()),
-                    });
-                }
-            }
-        });
-        selected
+        self.problems
+            .show(ui, theme, self.diagnostic_revision, data)
     }
     pub fn request_feature(&mut self, kind: buture_lsp::features::Kind, editors: &EditorSpace) {
         if let (Some(client), Some(root)) = (&self.client, &self.root) {
