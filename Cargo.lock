@@ -532,6 +532,9 @@ dependencies = [
 [[package]]
 name = "buture-git"
 version = "0.1.0"
+dependencies = [
+ "buture-toolchains",
+]
 
 [[package]]
 name = "buture-hardware"

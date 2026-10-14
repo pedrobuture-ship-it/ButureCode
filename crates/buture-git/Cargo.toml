@@ -10,3 +10,6 @@ description = "Future source control integration."
 
 [lints]
 workspace = true
+
+[dependencies]
+buture-toolchains = { path = "../buture-toolchains" }
